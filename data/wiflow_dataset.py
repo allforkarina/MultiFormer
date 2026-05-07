@@ -33,12 +33,25 @@ def _frame_idx_from_frame_id(frame_id: str, fallback: int) -> int:
     return fallback
 
 
+def _normalize_storage_format(value: str | bytes | None) -> str:
+    storage_format = _decode_string(value or "cleaned_raw").strip().lower()
+    if storage_format in {"cleaned_raw", "raw"}:
+        return "cleaned_raw"
+    if storage_format in {"normalized"}:
+        return "normalized"
+    return storage_format
+
+
+def _split_indices_dataset_name(split: str, split_scheme: str) -> str:
+    return f"{split_scheme}_{split}_indices"
+
+
 class WiFlowDataset(Dataset):
     def __init__(
         self,
         h5_path: str | Path,
         split: str = "train",
-        split_scheme: str = "action_env",
+        split_scheme: str | None = None,
         time_packets: int = 64,
         subcarrier_mode: str = "keep",
         normalize: str = "zscore",
@@ -52,7 +65,6 @@ class WiFlowDataset(Dataset):
     ) -> None:
         self.h5_path = Path(h5_path)
         self.split = split
-        self.split_scheme = split_scheme
         self.time_packets = time_packets
         self.subcarrier_mode = subcarrier_mode
         self.normalize = normalize
@@ -64,23 +76,35 @@ class WiFlowDataset(Dataset):
         self._h5_file: h5py.File | None = None
 
         with h5py.File(self.h5_path, "r") as h5_file:
+            resolved_split_scheme = split_scheme or _decode_string(
+                h5_file.attrs.get("default_split_scheme", "action_env")
+            )
+            self.split_scheme = resolved_split_scheme
+            self.storage_format = _normalize_storage_format(h5_file.attrs.get("storage_format", "cleaned_raw"))
+
             if split == "all":
                 indices = np.arange(len(h5_file["action"]), dtype=np.int64)
             else:
-                dataset_name = f"{split_scheme}_{split}_indices"
+                dataset_name = _split_indices_dataset_name(split, resolved_split_scheme)
                 if dataset_name not in h5_file:
                     dataset_name = f"{split}_indices"
                 if dataset_name not in h5_file:
                     raise KeyError(
-                        f"Split {split!r} not found in {self.h5_path} for split_scheme={split_scheme!r}"
+                        f"Split {split!r} not found in {self.h5_path} for split_scheme={resolved_split_scheme!r}"
                     )
                 indices = np.asarray(h5_file[dataset_name], dtype=np.int64)
 
             self.keypoint_x_scale = float(
-                h5_file.attrs.get(f"{split_scheme}_keypoint_x_scale", h5_file.attrs.get("keypoint_x_scale", 1.0))
+                h5_file.attrs.get(
+                    f"{resolved_split_scheme}_keypoint_x_scale",
+                    h5_file.attrs.get("keypoint_x_scale", 1.0),
+                )
             )
             self.keypoint_y_scale = float(
-                h5_file.attrs.get(f"{split_scheme}_keypoint_y_scale", h5_file.attrs.get("keypoint_y_scale", 1.0))
+                h5_file.attrs.get(
+                    f"{resolved_split_scheme}_keypoint_y_scale",
+                    h5_file.attrs.get("keypoint_y_scale", 1.0),
+                )
             )
 
             if envs:
@@ -115,8 +139,14 @@ class WiFlowDataset(Dataset):
         csi_amplitude = np.asarray(h5_file["csi_amplitude"][dataset_index], dtype=np.float32)
         keypoints17 = np.asarray(h5_file["keypoints"][dataset_index], dtype=np.float32)
 
-        keypoints17[:, 0] /= self.keypoint_x_scale
-        keypoints17[:, 1] /= self.keypoint_y_scale
+        if self.storage_format == "cleaned_raw":
+            keypoints17 = keypoints17.copy()
+            keypoints17[:, 0] /= self.keypoint_x_scale
+            keypoints17[:, 1] /= self.keypoint_y_scale
+        elif self.storage_format != "normalized":
+            raise ValueError(
+                f"Unsupported storage_format={self.storage_format!r} in {self.h5_path}"
+            )
         lo, hi = self.pose_range
         keypoints17 = keypoints17 * (hi - lo) + lo
 
@@ -143,6 +173,8 @@ class WiFlowDataset(Dataset):
                 "action": action,
                 "frame_id": frame_id,
                 "frame_idx": frame_idx,
+                "split": self.split,
+                "split_scheme": self.split_scheme,
                 "csi_path": f"{self.h5_path}::csi_amplitude[{dataset_index}]",
             },
         }

@@ -129,7 +129,7 @@ def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> torc
         return WiFlowDataset(
             h5_path=root,
             split=split,
-            split_scheme=ds_cfg.get("split_scheme", "action_env"),
+            split_scheme=ds_cfg.get("split_scheme"),
             time_packets=int(csi_cfg.get("time_packets", 64)),
             subcarrier_mode=csi_cfg.get("subcarrier_mode", "keep"),
             normalize=csi_cfg.get("normalize", "zscore"),
@@ -184,6 +184,20 @@ def build_model(cfg: dict) -> MultiFormer:
     )
 
 
+def resolve_runtime_split(cfg: dict, purpose: str) -> str:
+    ds_cfg = cfg["dataset"]
+    root = Path(ds_cfg["root"])
+    if purpose == "train":
+        return "train"
+    if purpose == "val":
+        return ds_cfg.get("val_split", "val" if root.suffix.lower() in {".h5", ".hdf5"} else "test")
+    if purpose == "test":
+        return ds_cfg.get("test_split", "test")
+    if purpose == "all":
+        return "all"
+    raise ValueError(f"Unknown dataset split purpose: {purpose}")
+
+
 def multistage_loss(outputs, pcm_gt, paf_gt) -> torch.Tensor:
     loss = torch.zeros((), device=pcm_gt.device)
     for pcm, paf in outputs:
@@ -230,11 +244,11 @@ def main() -> None:
     device_name = train_cfg.get("device", "cuda")
     device = torch.device("cuda" if device_name == "cuda" and torch.cuda.is_available() else "cpu")
 
-    train_ds = build_dataset(cfg, "train", max_samples=args.max_train_samples)
-    val_ds = build_dataset(cfg, "test", max_samples=args.max_val_samples)
-    if len(train_ds) == 0:
+    train_ds = build_dataset(cfg, resolve_runtime_split(cfg, "train"), max_samples=args.max_train_samples)
+    val_ds = build_dataset(cfg, resolve_runtime_split(cfg, "val"), max_samples=args.max_val_samples)
+    if len(train_ds) == 0: # pyright: ignore[reportArgumentType]
         raise RuntimeError("No training samples found. Check dataset.root and split subjects.")
-    if len(val_ds) == 0:
+    if len(val_ds) == 0: # pyright: ignore[reportArgumentType]
         print("Warning: no validation samples found; training without validation.")
 
     train_loader = DataLoader(
@@ -250,7 +264,7 @@ def main() -> None:
         shuffle=False,
         num_workers=int(train_cfg.get("num_workers", 4)),
         pin_memory=device.type == "cuda",
-    ) if len(val_ds) else None
+    ) if len(val_ds) else None # pyright: ignore[reportArgumentType]
 
     model = build_model(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg.get("lr", 1e-3)))

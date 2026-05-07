@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from decode.pose_decoder import decode_single_person
-from train import build_model, load_config, build_dataset
+from train import build_model, load_config, build_dataset, resolve_runtime_split
 from utils.viz import render_compare
 
 
@@ -50,7 +50,7 @@ def main() -> None:
     for env in cfg["dataset"].get("envs", ["E01", "E02", "E03", "E04"]):
         orig_envs = cfg["dataset"].get("envs")
         cfg["dataset"]["envs"] = [env]
-        dataset = build_dataset(cfg, "all")
+        dataset = build_dataset(cfg, resolve_runtime_split(cfg, "all"))
         cfg["dataset"]["envs"] = orig_envs
 
         if len(dataset) == 0:
