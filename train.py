@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data.mmfi_dataset import MMFiDataset
+from data.wiflow_dataset import WiFlowDataset
 from decode.pose_decoder import decode_single_person
 from models.multiformer import MultiFormer
 from utils.metrics import pck_batch
@@ -118,10 +119,28 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFiDataset:
+def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> torch.utils.data.Dataset:
     ds_cfg = cfg["dataset"]
     csi_cfg = cfg["csi"]
     hm_cfg = cfg["heatmap"]
+    
+    root = Path(ds_cfg["root"])
+    if root.suffix.lower() in {".h5", ".hdf5"}:
+        return WiFlowDataset(
+            h5_path=root,
+            split=split,
+            split_scheme=ds_cfg.get("split_scheme", "action_env"),
+            time_packets=int(csi_cfg.get("time_packets", 64)),
+            subcarrier_mode=csi_cfg.get("subcarrier_mode", "keep"),
+            normalize=csi_cfg.get("normalize", "zscore"),
+            heatmap_size=int(hm_cfg.get("size", 36)),
+            heatmap_sigma=float(hm_cfg.get("sigma", 1.5)),
+            paf_width=float(hm_cfg.get("paf_width", 1.0)),
+            pose_range=(float(hm_cfg.get("pose_min", -0.8)), float(hm_cfg.get("pose_max", 0.8))),
+            max_samples=max_samples if max_samples is not None else ds_cfg.get("max_samples"),
+            envs=ds_cfg.get("envs"),
+        )
+    
     return MMFiDataset(
         root=ds_cfg["root"],
         split=split,
