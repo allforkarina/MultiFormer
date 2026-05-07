@@ -2,25 +2,14 @@ from __future__ import annotations
 
 import argparse
 import random
-import re
 from pathlib import Path
 
 import torch
 
+from data.mmfi_dataset import MMFiDataset
 from decode.pose_decoder import decode_single_person
-from train import build_model, load_config, build_dataset, resolve_runtime_split
+from train import build_model, load_config
 from utils.viz import render_compare
-
-
-def _format_frame_meta(meta: dict) -> tuple[str, int]:
-    if "frame_idx" in meta:
-        frame_idx = int(meta["frame_idx"])
-        return f"{frame_idx:03d}", frame_idx
-
-    frame_id = str(meta.get("frame_id", "frame000"))
-    match = re.search(r"(\d+)$", frame_id)
-    frame_idx = int(match.group(1)) if match else 0
-    return frame_id, frame_idx
 
 
 def main() -> None:
@@ -48,14 +37,20 @@ def main() -> None:
     pose_range = (float(cfg["heatmap"].get("pose_min", -0.8)), float(cfg["heatmap"].get("pose_max", 0.8)))
 
     for env in cfg["dataset"].get("envs", ["E01", "E02", "E03", "E04"]):
-        orig_envs = cfg["dataset"].get("envs")
-        cfg["dataset"]["envs"] = [env]
-        dataset = build_dataset(cfg, resolve_runtime_split(cfg, "all"))
-        cfg["dataset"]["envs"] = orig_envs
-
-        if len(dataset) == 0:
-            continue
-
+        dataset = MMFiDataset(
+            root=cfg["dataset"]["root"],
+            split="all",
+            protocol="all",
+            envs=[env],
+            time_packets=int(cfg["csi"].get("time_packets", 64)),
+            subcarrier_mode=cfg["csi"].get("subcarrier_mode", "keep"),
+            normalize=cfg["csi"].get("normalize", "zscore"),
+            amp_key=cfg["csi"].get("amp_key", "CSIamp"),
+            heatmap_size=int(cfg["heatmap"].get("size", 36)),
+            heatmap_sigma=float(cfg["heatmap"].get("sigma", 1.5)),
+            paf_width=float(cfg["heatmap"].get("paf_width", 1.0)),
+            pose_range=pose_range,
+        )
         indices = list(range(len(dataset)))
         rng.shuffle(indices)
         for index in indices[:n_per_env]:
@@ -65,9 +60,8 @@ def main() -> None:
                 pcm, paf = model(csi)[-1]
             pred = decode_single_person(pcm[0], peak_threshold=float(cfg["eval"].get("peak_threshold", 0.1)), pose_range=pose_range)
             meta = item["meta"]
-            frame_label, frame_idx = _format_frame_meta(meta)
-            title = f"{meta['env']}/{meta['subject']}/{meta['action']} frame={frame_label}"
-            save_path = out_root / meta["env"] / f"{meta['subject']}_{meta['action']}_f{frame_idx:03d}.png"
+            title = f"{meta['env']}/{meta['subject']}/{meta['action']} frame={meta['frame_idx']:03d}"
+            save_path = out_root / meta["env"] / f"{meta['subject']}_{meta['action']}_f{meta['frame_idx']:03d}.png"
             render_compare(item["kpts18"].numpy(), pred, title=title, save_path=save_path)
             print(save_path)
 

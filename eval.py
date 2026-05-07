@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from decode.pose_decoder import decode_single_person
-from train import build_dataset, build_model, load_config, multistage_loss, resolve_runtime_split
+from train import build_dataset, build_model, load_config, multistage_loss
 from utils.metrics import pck_batch
 
 
@@ -27,7 +27,7 @@ def main() -> None:
     device_name = cfg["train"].get("device", "cuda")
     device = torch.device("cuda" if device_name == "cuda" and torch.cuda.is_available() else "cpu")
 
-    dataset = build_dataset(cfg, resolve_runtime_split(cfg, "test"), max_samples=args.max_samples)
+    dataset = build_dataset(cfg, "test", max_samples=args.max_samples)
     loader = DataLoader(
         dataset,
         batch_size=int(cfg["eval"].get("batch_size", 32)),

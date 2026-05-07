@@ -12,7 +12,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data.mmfi_dataset import MMFiDataset
-from data.wiflow_dataset import WiFlowDataset
 from decode.pose_decoder import decode_single_person
 from models.multiformer import MultiFormer
 from utils.metrics import pck_batch
@@ -119,28 +118,10 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> torch.utils.data.Dataset:
+def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFiDataset:
     ds_cfg = cfg["dataset"]
     csi_cfg = cfg["csi"]
     hm_cfg = cfg["heatmap"]
-    
-    root = Path(ds_cfg["root"])
-    if root.suffix.lower() in {".h5", ".hdf5"}:
-        return WiFlowDataset(
-            h5_path=root,
-            split=split,
-            split_scheme=ds_cfg.get("split_scheme"),
-            time_packets=int(csi_cfg.get("time_packets", 64)),
-            subcarrier_mode=csi_cfg.get("subcarrier_mode", "keep"),
-            normalize=csi_cfg.get("normalize", "zscore"),
-            heatmap_size=int(hm_cfg.get("size", 36)),
-            heatmap_sigma=float(hm_cfg.get("sigma", 1.5)),
-            paf_width=float(hm_cfg.get("paf_width", 1.0)),
-            pose_range=(float(hm_cfg.get("pose_min", -0.8)), float(hm_cfg.get("pose_max", 0.8))),
-            max_samples=max_samples if max_samples is not None else ds_cfg.get("max_samples"),
-            envs=ds_cfg.get("envs"),
-        )
-    
     return MMFiDataset(
         root=ds_cfg["root"],
         split=split,
@@ -182,20 +163,6 @@ def build_model(cfg: dict) -> MultiFormer:
         decoder_hidden=int(model_cfg.get("decoder_hidden", 512)),
         stages=int(model_cfg.get("stages", 3)),
     )
-
-
-def resolve_runtime_split(cfg: dict, purpose: str) -> str:
-    ds_cfg = cfg["dataset"]
-    root = Path(ds_cfg["root"])
-    if purpose == "train":
-        return "train"
-    if purpose == "val":
-        return ds_cfg.get("val_split", "val" if root.suffix.lower() in {".h5", ".hdf5"} else "test")
-    if purpose == "test":
-        return ds_cfg.get("test_split", "test")
-    if purpose == "all":
-        return "all"
-    raise ValueError(f"Unknown dataset split purpose: {purpose}")
 
 
 def multistage_loss(outputs, pcm_gt, paf_gt) -> torch.Tensor:
@@ -244,11 +211,11 @@ def main() -> None:
     device_name = train_cfg.get("device", "cuda")
     device = torch.device("cuda" if device_name == "cuda" and torch.cuda.is_available() else "cpu")
 
-    train_ds = build_dataset(cfg, resolve_runtime_split(cfg, "train"), max_samples=args.max_train_samples)
-    val_ds = build_dataset(cfg, resolve_runtime_split(cfg, "val"), max_samples=args.max_val_samples)
-    if len(train_ds) == 0: # pyright: ignore[reportArgumentType]
+    train_ds = build_dataset(cfg, "train", max_samples=args.max_train_samples)
+    val_ds = build_dataset(cfg, "test", max_samples=args.max_val_samples)
+    if len(train_ds) == 0:
         raise RuntimeError("No training samples found. Check dataset.root and split subjects.")
-    if len(val_ds) == 0: # pyright: ignore[reportArgumentType]
+    if len(val_ds) == 0:
         print("Warning: no validation samples found; training without validation.")
 
     train_loader = DataLoader(
@@ -264,7 +231,7 @@ def main() -> None:
         shuffle=False,
         num_workers=int(train_cfg.get("num_workers", 4)),
         pin_memory=device.type == "cuda",
-    ) if len(val_ds) else None # pyright: ignore[reportArgumentType]
+    ) if len(val_ds) else None
 
     model = build_model(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_cfg.get("lr", 1e-3)))
