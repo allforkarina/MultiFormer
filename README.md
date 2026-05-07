@@ -15,6 +15,8 @@ dataset:
   root: "D:/MM-Fi数据集/MMFi_Dataset"
 ```
 
+默认 split 是 `same_subject_random`：在 `E01/S01-S10` 内按帧随机划分训练/验证，避免把 `E01-E03` 训练和 `E04` 验证混成跨环境评估。
+
 ## 快速检查
 
 ```powershell

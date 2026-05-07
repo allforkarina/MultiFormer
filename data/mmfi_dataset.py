@@ -7,11 +7,9 @@ from typing import Iterable, Sequence
 
 import numpy as np
 import torch
-from scipy.io import loadmat
 from torch.utils.data import Dataset
 
-from .csi_preprocess import preprocess_csi_amp
-from .heatmap_gt import build_pcm_paf, coco17_to_openpose18
+from .heatmap_gt import build_pcm_paf
 
 
 @dataclass(frozen=True)
@@ -19,13 +17,9 @@ class MMFiSample:
     env: str
     subject: str
     action: str
-    frame_idx: int
-    trial_dir: Path
-    csi_path: Path
-
-    @property
-    def pose_path(self) -> Path:
-        return self.trial_dir / "pose2d.npy"
+    frame_idx: int        # 1-based index, kept for compatibility / metadata
+    array_index: int      # 0-based index into the npz arrays
+    npz_path: Path
 
 
 def _sorted_dirs(path: Path, prefixes: Sequence[str] | None = None) -> list[Path]:
@@ -37,52 +31,49 @@ def _sorted_dirs(path: Path, prefixes: Sequence[str] | None = None) -> list[Path
     return sorted(dirs, key=lambda p: p.name)
 
 
-def _frame_number(path: Path) -> int | None:
-    stem = path.stem
-    digits = "".join(ch for ch in stem if ch.isdigit())
-    return int(digits) if digits else None
-
-
 def enumerate_mmfi_samples(
     root: str | Path,
     envs: Iterable[str] | None = None,
     subjects: Iterable[str] | None = None,
     max_samples: int | None = None,
 ) -> list[MMFiSample]:
+    """Enumerate every (trial, frame) pair available under the preprocessed npz tree.
+
+    The expected layout is::
+
+        root/E0X/S0X/A0X.npz
+        with arrays: csi (N,64,3,114), kpts18 (N,18,2), frame_idx (N,)
+    """
     root = Path(root)
     env_filter = set(envs) if envs else None
     subject_filter = set(subjects) if subjects else None
     samples: list[MMFiSample] = []
 
-    env_dirs = _sorted_dirs(root, ["E"])
-    for env_dir in env_dirs:
+    for env_dir in _sorted_dirs(root, ["E"]):
         if env_filter and env_dir.name not in env_filter:
             continue
         for subject_dir in _sorted_dirs(env_dir, ["S"]):
             if subject_filter and subject_dir.name not in subject_filter:
                 continue
-            for action_dir in _sorted_dirs(subject_dir, ["A"]):
-                pose_path = action_dir / "pose2d.npy"
-                csi_dir = action_dir / "wifi-csi"
-                if not pose_path.exists() or not csi_dir.exists():
-                    continue
+            for npz_path in sorted(subject_dir.glob("A*.npz")):
+                action = npz_path.stem
                 try:
-                    pose_len = int(np.load(pose_path, mmap_mode="r").shape[0])
+                    with np.load(npz_path, mmap_mode="r") as data:
+                        n_frames = int(data["csi"].shape[0])
+                        frame_ids = np.asarray(data["frame_idx"]).astype(int).tolist()
                 except Exception:
                     continue
-                frame_paths = sorted(csi_dir.glob("frame*.mat"), key=lambda p: p.name)
-                for csi_path in frame_paths:
-                    frame_idx = _frame_number(csi_path)
-                    if frame_idx is None or frame_idx < 1 or frame_idx > pose_len:
-                        continue
+                if len(frame_ids) != n_frames:
+                    frame_ids = list(range(1, n_frames + 1))
+                for array_index in range(n_frames):
                     samples.append(
                         MMFiSample(
                             env=env_dir.name,
                             subject=subject_dir.name,
-                            action=action_dir.name,
-                            frame_idx=frame_idx,
-                            trial_dir=action_dir,
-                            csi_path=csi_path,
+                            action=action,
+                            frame_idx=int(frame_ids[array_index]),
+                            array_index=array_index,
+                            npz_path=npz_path,
                         )
                     )
                     if max_samples is not None and len(samples) >= max_samples:
@@ -124,19 +115,21 @@ class MMFiDataset(Dataset):
         self.paf_width = paf_width
         self.pose_range = pose_range
         self.build_targets = build_targets
-        self._pose_cache: dict[Path, np.ndarray] = {}
+        self._npz_cache: dict[Path, dict[str, np.ndarray]] = {}
 
         subjects = None
         if protocol == "subject_cross" and split != "all":
+            subjects = train_subjects if split == "train" else test_subjects
+        elif protocol == "same_subject_random" and split != "all":
             subjects = train_subjects if split == "train" else test_subjects
 
         all_samples = enumerate_mmfi_samples(
             self.root,
             envs=envs,
             subjects=subjects,
-            max_samples=None if protocol == "random" else max_samples,
+            max_samples=None if protocol in {"random", "same_subject_random"} else max_samples,
         )
-        if protocol == "random" and split != "all":
+        if protocol in {"random", "same_subject_random"} and split != "all":
             rng = random.Random(seed)
             rng.shuffle(all_samples)
             pivot = int(round(len(all_samples) * (1.0 - random_val_ratio)))
@@ -149,37 +142,31 @@ class MMFiDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _load_pose_array(self, path: Path) -> np.ndarray:
-        cached = self._pose_cache.get(path)
+    def _load_trial(self, path: Path) -> dict[str, np.ndarray]:
+        cached = self._npz_cache.get(path)
         if cached is None:
-            cached = np.load(path).astype(np.float32)
-            self._pose_cache[path] = cached
+            with np.load(path) as data:
+                cached = {
+                    "csi": np.asarray(data["csi"], dtype=np.float32),
+                    "kpts18": np.asarray(data["kpts18"], dtype=np.float32),
+                }
+            self._npz_cache[path] = cached
         return cached
 
     def __getitem__(self, index: int) -> dict:
         sample = self.samples[index]
-        mat = loadmat(sample.csi_path)
-        if self.amp_key not in mat:
-            keys = [k for k in mat.keys() if not k.startswith("__")]
-            raise KeyError(f"{sample.csi_path} does not contain {self.amp_key}; keys={keys}")
-        csi = preprocess_csi_amp(
-            mat[self.amp_key],
-            target_packets=self.time_packets,
-            subcarrier_mode=self.subcarrier_mode,
-            normalize=self.normalize,
-        )
-
-        pose17 = self._load_pose_array(sample.pose_path)[sample.frame_idx - 1]
-        kpts18 = coco17_to_openpose18(pose17)
+        trial = self._load_trial(sample.npz_path)
+        csi = trial["csi"][sample.array_index]
+        kpts18 = trial["kpts18"][sample.array_index]
         item = {
-            "csi": torch.from_numpy(csi),
-            "kpts18": torch.from_numpy(kpts18),
+            "csi": torch.from_numpy(np.ascontiguousarray(csi)),
+            "kpts18": torch.from_numpy(np.ascontiguousarray(kpts18)),
             "meta": {
                 "env": sample.env,
                 "subject": sample.subject,
                 "action": sample.action,
                 "frame_idx": sample.frame_idx,
-                "csi_path": str(sample.csi_path),
+                "csi_path": str(sample.npz_path),
             },
         }
         if self.build_targets:

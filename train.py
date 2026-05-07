@@ -251,6 +251,11 @@ def main() -> None:
         writer.writeheader()
 
     overfit_batch = None
+    early_stop_min_delta = float(train_cfg.get("early_stop_min_delta", 0.0))
+    early_stop_patience = int(train_cfg.get("early_stop_patience", 1))
+    early_stop_warmup = int(train_cfg.get("early_stop_warmup", 3))
+    prev_train_loss = float("inf")
+    plateau_count = 0
     for epoch in range(1, int(train_cfg.get("epochs", 100)) + 1):
         model.train()
         train_losses = []
@@ -289,14 +294,26 @@ def main() -> None:
         with open(log_path, "a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=row.keys()).writerow(row)
 
-        ckpt = {"model": model.state_dict(), "cfg": cfg, "epoch": epoch, "val_loss": val_loss}
-        torch.save(ckpt, output_dir / "last.pth")
         if val_loss < best_loss:
             best_loss = val_loss
+            ckpt = {"model": model.state_dict(), "cfg": cfg, "epoch": epoch, "val_loss": val_loss}
             torch.save(ckpt, output_dir / "best.pth")
-        if epoch % int(train_cfg.get("save_every", 5)) == 0:
-            torch.save(ckpt, output_dir / f"epoch_{epoch:03d}.pth")
         print(f"epoch={epoch} train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
+
+        if early_stop_min_delta > 0 and epoch >= early_stop_warmup:
+            improvement = prev_train_loss - train_loss
+            if improvement < early_stop_min_delta:
+                plateau_count += 1
+                print(
+                    f"early-stop check: train_loss improvement {improvement:.6f}"
+                    f" < {early_stop_min_delta} ({plateau_count}/{early_stop_patience})"
+                )
+                if plateau_count >= early_stop_patience:
+                    print(f"early stopping at epoch {epoch}: train_loss plateaued")
+                    break
+            else:
+                plateau_count = 0
+        prev_train_loss = train_loss
 
 
 if __name__ == "__main__":

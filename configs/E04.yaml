@@ -1,11 +1,9 @@
-# 默认配置 = E01 单环境实验。
-# 4 个环境分别独立训练，详见 configs/E0{1..4}.yaml；不做跨域。
 dataset:
   root: "/root/autodl-fs/鸿鹄实验/数据/data_pre"
-  split: "same_subject_random"   # same_subject_random, subject_cross, random, all
-  envs: ["E01"]
-  train_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
-  test_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
+  split: "same_subject_random"
+  envs: ["E04"]
+  train_subjects: ["S31", "S32", "S33", "S34", "S35", "S36", "S37", "S38", "S39", "S40"]
+  test_subjects: ["S31", "S32", "S33", "S34", "S35", "S36", "S37", "S38", "S39", "S40"]
   random_val_ratio: 0.2
   seed: 42
   max_samples: null
@@ -14,8 +12,8 @@ csi:
   time_packets: 64
   rx_antennas: 3
   subcarriers: 114
-  subcarrier_mode: "keep"  # keep, learned64, resample64
-  normalize: "zscore"      # zscore, minmax, none
+  subcarrier_mode: "keep"
+  normalize: "zscore"
   amp_key: "CSIamp"
 
 heatmap:
@@ -43,9 +41,12 @@ train:
   lr_gamma: 0.7
   num_workers: 4
   device: "cuda"
-  output_dir: "outputs"
+  output_dir: "outputs/E04"
   log_every: 20
   save_every: 5
+  early_stop_min_delta: 0.001
+  early_stop_patience: 1
+  early_stop_warmup: 3
 
 eval:
   batch_size: 32
