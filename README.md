@@ -1,6 +1,6 @@
 # MultiFormer MM-Fi 复现工程
 
-这个目录按 `复现计划.md` 实现了 MultiFormer 学生网络：MM-Fi CSI 读取、TFDDT、双路 Transformer、MSFN 三阶段 PCM/PAF 输出、PCK 评估和 GT/Pred 骨架可视化。
+这个目录按 `复现计划.md` 实现了 MultiFormer 学生网络：MM-Fi CSI 读取、TFDDT、双路 Transformer、MSFN 三阶段 PCM/PAF 输出、PCK 评估和 GT/Pred 骨架可视化，为什么性能不一样。
 
 ## 环境
 
