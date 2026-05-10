@@ -1,0 +1,49 @@
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data files
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.mat
+*.pkl
+*.pickle
+dataset/
+datasets/
+
+# Model checkpoints
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+checkpoint/
+checkpoints/
+
+# Training runs
+runs/
+
+# Training outputs
+outputs/
+output/
+logs/
+*.log
+
+# Cache
+cache/
+.cache/
+*.cache
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
