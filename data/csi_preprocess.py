@@ -15,8 +15,8 @@ def sanitize_csi(x: np.ndarray) -> np.ndarray:
     finite = np.isfinite(x)
     if finite.all():
         return x
-    fill = float(np.median(x[finite])) if finite.any() else 0.0
-    return np.nan_to_num(x, nan=fill, posinf=fill, neginf=fill).astype(np.float32)
+    fill = float(np.median(x[finite])) if finite.any() else 0.0                     # get the median value
+    return np.nan_to_num(x, nan=fill, posinf=fill, neginf=fill).astype(np.float32)  # emplace the nan with the fill
 
 
 def normalize_csi(x: np.ndarray, mode: NormalizeMode = "zscore", eps: float = 1e-6) -> np.ndarray:
@@ -40,7 +40,7 @@ def normalize_csi(x: np.ndarray, mode: NormalizeMode = "zscore", eps: float = 1e
 
 def resample_time(csi_amp: np.ndarray, target_packets: int = 64) -> np.ndarray:
     """Resample CSI amplitude from (NR, NS, M0) to (NR, NS, target_packets)."""
-    csi_amp = sanitize_csi(csi_amp)
+    csi_amp = sanitize_csi(csi_amp)     # [297, 3, 114, 10]
     if csi_amp.ndim == 2:
         csi_amp = csi_amp[:, :, None]
     if csi_amp.ndim != 3:
@@ -55,6 +55,20 @@ def resample_subcarriers(csi_amp: np.ndarray, target_subcarriers: int = 64) -> n
     if csi_amp.shape[1] == target_subcarriers:
         return csi_amp.astype(np.float32)
     return sanitize_csi(resample(csi_amp, target_subcarriers, axis=1))
+
+
+def normalize_global_minmax(
+    x: np.ndarray,
+    train_min: float,
+    train_max: float,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Apply global min-max normalization using pre-computed train split statistics."""
+    x = sanitize_csi(x)
+    denom = train_max - train_min
+    if not np.isfinite(denom) or denom < eps:
+        return np.zeros_like(x, dtype=np.float32)
+    return ((x - train_min) / (denom + eps)).astype(np.float32)
 
 
 def preprocess_csi_amp(

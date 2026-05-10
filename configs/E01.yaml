@@ -1,19 +1,19 @@
 dataset:
-  root: "/root/autodl-fs/鸿鹄实验/数据/data_pre"
+  type: "h5"
+  root: "/data/WiFiPose/dataset/mmfi_pose.h5"
   split: "same_subject_random"
-  envs: ["E01"]
+  envs: ["env1"]
   train_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   test_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   random_val_ratio: 0.2
   seed: 42
-  max_samples: null
 
 csi:
   time_packets: 64
   rx_antennas: 3
   subcarriers: 114
   subcarrier_mode: "keep"
-  normalize: "zscore"
+  normalize: "global_minmax"
   amp_key: "CSIamp"
 
 heatmap:

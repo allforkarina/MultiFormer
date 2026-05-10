@@ -1,14 +1,15 @@
-# 默认配置 = E01 单环境实验。
+# 默认配置 = E01 单环境实验，使用 Linux 服务器 HDF5 数据。
 # 4 个环境分别独立训练，详见 configs/E0{1..4}.yaml；不做跨域。
+# 如需使用本地 NPZ 格式数据，设置 dataset.type 为 "npz"。
 dataset:
-  root: "/root/autodl-fs/鸿鹄实验/数据/data_pre"
+  type: "h5"                     # h5 (Linux HDF5) 或 npz (本地NPZ文件)
+  root: "/data/WiFiPose/dataset/mmfi_pose.h5"
   split: "same_subject_random"   # same_subject_random, subject_cross, random, all
-  envs: ["E01"]
+  envs: ["env1"]                 # HDF5中env命名: env1-env4
   train_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   test_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   random_val_ratio: 0.2
   seed: 42
-  max_samples: null
 
 csi:
   time_packets: 64
