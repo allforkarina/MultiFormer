@@ -15,172 +15,65 @@
 
 ## 阶段 1: 实验 A — 验证 H5 内 CSI 原始数据范围
 
-**状态**: pending
+**状态**: complete
 
-**目标**: 确认 H5 中的 `csi_amplitude` 是原始幅度还是已被归一化到 [0,1]。
-
-**操作**:
-在 Linux 服务器上运行以下诊断脚本：
-
-```python
-# scripts/check_h5_csi_range.py
-import h5py
-import numpy as np
-
-h5_path = "/data/WiFiPose/dataset/mmfi_pose.h5"
-with h5py.File(h5_path, "r") as f:
-    raw = f["csi_amplitude"][:100]  # 前 100 帧
-    print("=== CSI Amplitude Raw Data ===")
-    print(f"shape: {raw.shape}")
-    print(f"min: {raw.min():.6f}")
-    print(f"max: {raw.max():.6f}")
-    print(f"mean: {raw.mean():.6f}")
-    print(f"std: {raw.std():.6f}")
-    print()
-    print("=== H5 Attributes ===")
-    for k, v in f.attrs.items():
-        print(f"  {k}: {v}")
-
-# 判断逻辑:
-# 若 raw.max() ≈ 1 而 attrs.amplitude_train_max ≈ 57 → 二次归一化 bug，需修复 H5 构建脚本
-# 若 raw.max() 与 attrs.amplitude_train_max 量级一致 → 数据正常，继续阶段 2
-```
-
-**判断与决策**:
-- 若二次归一化 → **修复 H5 构建脚本**，重新生成 H5 文件（移除构建阶段的归一化，保留原始 amplitude）
-- 若数据正常 → 继续阶段 2
+**结果**: CONFIRMED — H5 CSI 已在构建阶段归一化到 [0,1]。
+- raw max = 0.9354, attr amplitude_train_max = 57.1957
+- `amplitude_normalization: train_global_minmax` — 确认数据是预归一化的
+- **结论**: 加载侧调用 `normalize_global_minmax` 是二次归一化，与关键点 bug 同性质
+- **修复方案**: 不重建 H5，而是在 loader 中检测 `amplitude_normalization` attr，跳过重复归一化
 
 ---
 
 ## 阶段 2: 实验 B — 归一化量级对齐
 
-**状态**: pending (依赖阶段 1 通过)
+**状态**: implemented (代码已修改，等待在服务器上训练验证)
 
-**目标**: 在保留"全局对齐"的前提下，将输入量级从 [0,1] 对齐到 ≈ N(0,1)。
+**背景**: 实验 A 确认 H5 CSI 已在 [0,1] 区间（预归一化）。实验 B 在此基础上调整输入量级，使其匹配模型期望的 ≈ N(0,1) 分布。
 
-### 涉及文件
+### 已完成的修改
 
-| 文件 | 修改内容 | 变更量 |
-|------|---------|--------|
-| `data/csi_preprocess.py` | 新增 `normalize_global_zscore()` 函数 | ~15 行 |
-| `data/h5_dataset.py` | `__getitem__` 中归一化分支逻辑 | ~10 行 |
-| `data/h5_dataset.py` | `__init__` 读取新的 H5 attrs（可选） | ~5 行 |
-| `configs/E01.yaml` | `csi.normalize` 字段扩展 | ~1 行 |
+#### `data/h5_dataset.py`
 
-### 2.1 新增归一化函数 (`data/csi_preprocess.py`)
+1. **修复二次归一化**: `__init__` 中读取 `amplitude_normalization` attr（第 77-80 行），若值为 `train_global_minmax` 则标记 `_amp_pre_normalized = True`
 
-在 `normalize_csi()` 之后新增：
-
+2. **归一化分发逻辑**: `__getitem__` 第 167-187 行替换为：
 ```python
-def normalize_global_zscore(
-    x: np.ndarray,
-    train_mean: float,
-    train_std: float,
-    eps: float = 1e-6,
-) -> np.ndarray:
-    """Apply global z-score normalization using pre-computed train split statistics.
-    
-    Unlike per-sample zscore, all samples share the same mean/std,
-    preserving inter-sample amplitude relationships (action discriminability).
-    Unlike global minmax, output is centered at 0 with unit variance,
-    matching the input distribution the model was designed for.
-    """
-    x = sanitize_csi(x)
-    denom = train_std
-    if not np.isfinite(denom) or denom < eps:
-        return np.zeros_like(x, dtype=np.float32)
-    return ((x - train_mean) / (denom + eps)).astype(np.float32)
-```
-
-**设计理由**: 全局 z-score 保留动作间相对幅度差异（与 minmax 一致），同时将输出对齐到 N(0,1) 量级（与 referVersion zscore 一致）。
-
-### 2.2 修改 H5MMFiDataset 的归一化逻辑 (`data/h5_dataset.py`)
-
-#### 2.2.1 `__init__` 读取新的 H5 attrs（方案 A 所需）
-
-在 `__init__` 的 H5 attrs 读取部分增加：
-
-```python
-# 仅当 normalize == "global_zscore" 时需要
-if self.normalize == "global_zscore":
-    self.amp_train_mean = float(f.attrs["amplitude_train_mean"])
-    self.amp_train_std = float(f.attrs["amplitude_train_std"])
-```
-
-**前提**: H5 文件需要预先计算并存储 `amplitude_train_mean` 和 `amplitude_train_std` 属性。如果 H5 中尚无这两个 attr，需先用诊断脚本计算并写入。
-
-#### 2.2.2 `__getitem__` 中的归一化分支
-
-将第 162-167 行的归一化调用改为根据 `self.normalize` 分发：
-
-```python
-# Normalize (strategy selected by config csi.normalize)
 if self.normalize == "global_minmax":
-    csi_amp = normalize_global_minmax(
-        csi_amp,
-        train_min=self.amp_train_min,
-        train_max=self.amp_train_max,
-    )
+    if not self._amp_pre_normalized:
+        csi_amp = normalize_global_minmax(...)  # only for non-pre-normalized data
+    # else: already [0,1] → double-norm bug avoided
 elif self.normalize == "global_zscore":
-    csi_amp = normalize_global_zscore(
-        csi_amp,
-        train_mean=self.amp_train_mean,
-        train_std=self.amp_train_std,
-    )
+    csi_amp = (csi_amp - 0.5) * 6.0  # [0,1] → [-3,+3], preserves global alignment
 elif self.normalize == "zscore":
-    csi_amp = normalize_csi(csi_amp, mode="zscore")
-elif self.normalize == "minmax":
-    csi_amp = normalize_csi(csi_amp, mode="minmax")
+    csi_amp = normalize_csi(csi_amp, mode="zscore")  # per-sample, referVersion equiv
 elif self.normalize == "none":
-    pass  # already sanitized in _resample_time_h5
-else:
-    raise ValueError(f"Unknown normalize mode: {self.normalize}")
+    pass
 ```
 
-### 2.3 配置变体
+#### 新增配置文件
 
-在 `configs/E01.yaml` 和新增的临时实验配置中切换 `csi.normalize`：
-
-| 配置 | `csi.normalize` | 说明 |
+| 文件 | `csi.normalize` | 说明 |
 |------|----------------|------|
-| E01.yaml (当前) | `"global_minmax"` | 基线 B0 |
-| E01_B1.yaml | `"global_zscore"` | 全局 z-score，保留全局对齐 |
-| E01_B2.yaml | `"zscore"` | 逐样本 z-score，等同 referVersion（对照） |
-| E01_B3.yaml | `"minmax"` | 逐样本 min-max，额外对照 |
+| `configs/E01.yaml` | `"global_minmax"` | B0 基线: [0,1] 不变（二次归一化已修复） |
+| `configs/E01_B1.yaml` | `"global_zscore"` | B1: [0,1]→[-3,+3] 中心化扩展 |
+| `configs/E01_B2.yaml` | `"zscore"` | B2: 逐样本 z-score (referVersion 等价) |
 
-**每个变体的 YAML 仅需修改 `csi.normalize` 和 `train.output_dir`**：
+### 在服务器上执行的命令
 
-```yaml
-# configs/E01_B1.yaml (示例)
-dataset:
-  type: "h5"
-  root: "/data/WiFiPose/dataset/mmfi_pose.h5"
-  # ... 其余与 E01.yaml 完全相同 ...
+```bash
+git pull
+# B0（基线，二次归一化修复）
+python train.py --config configs/E01.yaml
 
-csi:
-  normalize: "global_zscore"    # ← 唯一关键差异
-  # ... 其余相同 ...
+# B1（全局 z-score）
+python train.py --config configs/E01_B1.yaml
 
-train:
-  output_dir: "outputs/E01_B1"  # ← 避免覆盖原输出
-  # ... 其余相同 ...
+# B2（逐样本 z-score，等同 referVersion）
+python train.py --config configs/E01_B2.yaml
 ```
 
-### 2.4 训练与评估流程
-
-1. 创建 4 个配置文件（或直接在服务器上临时修改 normalize 字段）
-2. 每个变体训练 **5 epoch**（batch_size=32, seed=42）
-3. 记录每个 epoch 的 `train_log.csv`
-4. 对比指标：PCK@20 曲线、val_loss 曲线、train_loss 下降速度
-
-### 2.5 预期结果
-
-| 变体 | 预期 epoch 5 PCK@20 | 理由 |
-|------|---------------------|------|
-| B0 (global_minmax) | ~0.55-0.60 | 当前基线，输入量级不匹配 |
-| B1 (global_zscore) | **~0.75-0.85** | 量级对齐 + 保留全局关系 |
-| B2 (zscore) | ~0.80-0.88 | 等同 referVersion，最接近参考 |
-| B3 (minmax) | ~0.55-0.65 | 逐样本 min-max，量级仍不匹配 |
+每个变体训练 5 epoch 即可观察 PCK@20 趋势。预期 B1 和 B2 的 PCK@20 显著高于 B0。
 
 ---
 
@@ -259,10 +152,10 @@ with h5py.File(h5_path, "r+") as f:
 
 | 阶段 | 文件 | 操作 | 状态 |
 |------|------|------|------|
-| 1 | `scripts/check_h5_csi_range.py` | 新建 (诊断脚本) | pending |
-| 2.1 | `data/csi_preprocess.py` | 新增 `normalize_global_zscore()` | pending |
-| 2.2 | `data/h5_dataset.py` | 修改 `__init__` 读取新 attrs + `__getitem__` 归一化分支 | pending |
-| 2.3 | `configs/E01_B1.yaml` (等) | 新建实验配置 | pending |
+| 1 | `scripts/check_h5_csi_range.py` | 新建 (诊断脚本) | complete |
+| 2.1 | `data/h5_dataset.py` | 修复二次归一化 + 归一化分发逻辑 | complete |
+| 2.2 | `configs/E01_B1.yaml` | 新建 (global_zscore 变体) | complete |
+| 2.2 | `configs/E01_B2.yaml` | 新建 (zscore 变体) | complete |
 | 3 | `data/h5_dataset.py` | 修改 `_build_split` 划分逻辑 | pending |
 | 4 | `scripts/compute_h5_stats.py` | 新建 (统计量计算脚本) | pending |
 

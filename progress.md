@@ -41,4 +41,15 @@
 
 ### 实验 A 实现
 - [x] 创建 `scripts/check_h5_csi_range.py` — H5 CSI 二次归一化诊断脚本
-- [ ] 在 Linux 服务器执行脚本，返回输出供分析
+- [x] 在 Linux 服务器执行脚本，确认 **CSI 已被预归一化到 [0,1]**
+  - raw max=0.9354, attr amplitude_train_max=57.1957 → 二次归一化确认
+  - `amplitude_normalization: train_global_minmax` → 与关键点 bug 同性质
+
+### 实验 B 实现
+- [x] 修复 `data/h5_dataset.py` 二次归一化:
+  - `__init__` 检测 `amplitude_normalization` attr
+  - `__getitem__` 跳过已归一化数据的 `global_minmax` 调用
+- [x] 添加归一化分发逻辑: `global_minmax` / `global_zscore` / `zscore` / `none`
+- [x] 创建 `configs/E01_B1.yaml` (global_zscore 变体)
+- [x] 创建 `configs/E01_B2.yaml` (zscore 变体)
+- [ ] 在 Linux 服务器训练三个变体各 5 epoch，对比 PCK@20 曲线

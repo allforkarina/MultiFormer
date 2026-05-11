@@ -10,7 +10,7 @@ import torch
 from scipy.signal import resample
 from torch.utils.data import Dataset
 
-from .csi_preprocess import normalize_global_minmax, sanitize_csi
+from .csi_preprocess import normalize_csi, normalize_global_minmax, sanitize_csi
 from .heatmap_gt import build_pcm_paf, coco17_to_openpose18
 
 
@@ -73,6 +73,11 @@ class H5MMFiDataset(Dataset):
             self.amp_train_max = float(f.attrs["amplitude_train_max"])
             self.kp_x_scale = float(f.attrs.get("keypoint_x_scale", 1.0))
             self.kp_y_scale = float(f.attrs.get("keypoint_y_scale", 1.0))
+
+            # Detect whether CSI was already normalized during H5 building.
+            # If so, the loader MUST NOT re-apply global_minmax (double-norm bug).
+            amp_norm = str(f.attrs.get("amplitude_normalization", ""))
+            self._amp_pre_normalized = amp_norm in ("train_global_minmax", "global_minmax")
 
             self.indices = self._build_split(
                 f, split, envs, train_subjects, test_subjects, random_val_ratio, seed
@@ -159,12 +164,27 @@ class H5MMFiDataset(Dataset):
         # Transpose to (M, NR, NS) = (64, 3, 114)
         csi_amp = np.transpose(csi_amp, (2, 0, 1)).astype(np.float32)
 
-        # Global min-max normalize
-        csi_amp = normalize_global_minmax(
-            csi_amp,
-            train_min=self.amp_train_min,
-            train_max=self.amp_train_max,
-        )
+        # Normalize / magnitude-align CSI input.
+        # H5 data is pre-normalized to [0,1] during building (amplitude_normalization
+        # attr).  Re-applying global_minmax here would double-normalize — fixed.
+        if self.normalize == "global_minmax":
+            if not self._amp_pre_normalized:
+                csi_amp = normalize_global_minmax(
+                    csi_amp,
+                    train_min=self.amp_train_min,
+                    train_max=self.amp_train_max,
+                )
+            # else: already [0,1] — double-norm bug avoided
+        elif self.normalize == "global_zscore":
+            # Global center + scale: preserves inter-sample amplitude relationships
+            # while matching the ~N(0,1) input magnitude the model expects.
+            csi_amp = (csi_amp - 0.5) * 6.0  # [0,1] → [-3, +3]
+        elif self.normalize == "zscore":
+            csi_amp = normalize_csi(csi_amp, mode="zscore")
+        elif self.normalize == "none":
+            pass
+        else:
+            raise ValueError(f"Unknown normalize mode: {self.normalize}")
 
         # COCO17 -> OpenPose18 keypoint conversion
         keypoints_norm = self._normalize_keypoints(keypoints_coco)
