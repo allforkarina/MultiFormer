@@ -21,3 +21,20 @@
 - [x] 创建验证脚本 scripts/verify_kpts_fix.py
 - [ ] 在 Linux 服务器运行验证脚本确认修复生效
 - [ ] 重新训练验证 loss 正常下降 + PCK > 0
+
+---
+
+## 会话 2026-05-12 — 性能差距诊断
+
+### 差异分析 (v1 → v2 → v3)
+- [x] 对比 referVersion 和 multiformer 的文件级差异 (diff 验证)
+- [x] 确认模型/decode/metrics/heatmap_gt 代码完全相同
+- [x] 分析所有差异并创建 ablation_plan.md v1
+- [x] 读取 scripts/preprocess_mmfi.py，确认 CSI 时序处理完全相同
+- [x] 排除"时序分辨率不一致"假说 (v3 修正)
+- [x] 确认归一化输出量级不匹配为最可能根因
+
+### 规划输出
+- [x] 创建 ablation_plan.md (v1 → v2 → v3，每次修正)
+- [x] 创建 task_plan.md — 归一化消融实验实现计划
+- [x] 更新 progress.md (当前)
