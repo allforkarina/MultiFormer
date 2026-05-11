@@ -18,6 +18,6 @@
 
 ### 修复阶段
 - [x] 修改 h5_dataset.py `_normalize_keypoints` 移除 scale 除法
-- [ ] 验证修复后 keypoints 范围在 [-0.8, 0.8]
-- [ ] 验证 PCM 峰值分布在合理位置
+- [x] 创建验证脚本 scripts/verify_kpts_fix.py
+- [ ] 在 Linux 服务器运行验证脚本确认修复生效
 - [ ] 重新训练验证 loss 正常下降 + PCK > 0
