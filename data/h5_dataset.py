@@ -25,15 +25,16 @@ def _resample_time_h5(csi_amp: np.ndarray, target_packets: int = 64) -> np.ndarr
     csi_amp = sanitize_csi(np.asarray(csi_amp, dtype=np.float32))
     if csi_amp.shape[-1] == target_packets:
         return csi_amp
-    return sanitize_csi(resample(csi_amp, target_packets, axis=-1).astype(np.float32))
+    # scipy.signal.resample output is already finite (FFT-based); skip second sanitize
+    return resample(csi_amp, target_packets, axis=-1).astype(np.float32)
 
 
 class H5MMFiDataset(Dataset):
     """HDF5-backed dataset reading from pre-packed MM-Fi HDF5 file.
 
-    Reads raw CSI amplitude and COCO17 keypoints, applies time resampling
-    10→64, global min-max normalization, and converts to OpenPose18 format
-    matching the MultiFormer model input specification.
+    Keypoints and metadata are preloaded into RAM at init (~50 MB).
+    CSI amplitude is read from disk once per sample (1 HDF5 random read),
+    then time-resampled 10→64 on-the-fly.
     """
 
     def __init__(
@@ -74,18 +75,28 @@ class H5MMFiDataset(Dataset):
             self.kp_x_scale = float(f.attrs.get("keypoint_x_scale", 1.0))
             self.kp_y_scale = float(f.attrs.get("keypoint_y_scale", 1.0))
 
-            # Detect whether CSI was already normalized during H5 building.
-            # If so, the loader MUST NOT re-apply global_minmax (double-norm bug).
             amp_norm = str(f.attrs.get("amplitude_normalization", ""))
             self._amp_pre_normalized = amp_norm in ("train_global_minmax", "global_minmax")
 
+            # Preload lightweight arrays once (keypoints ~43 MB, meta ~5 MB).
+            # csi_amplitude (~4.4 GB) stays on disk — only 1 HDF5 read per sample.
+            self._keypoints_h5 = np.asarray(f["keypoints"][:], dtype=np.float32)
+            self._envs_h5 = np.array(
+                [_decode_bytes(e) for e in f["environment"][:]], dtype=object
+            )
+            self._samples_h5 = np.array(
+                [_decode_bytes(s) for s in f["sample"][:]], dtype=object
+            )
+            self._actions_h5 = np.array(
+                [_decode_bytes(a) for a in f["action"][:]], dtype=object
+            )
+
             self.indices = self._build_split(
-                f, split, envs, train_subjects, test_subjects, random_val_ratio, seed
+                split, envs, train_subjects, test_subjects, random_val_ratio, seed
             )
 
     def _build_split(
         self,
-        h5_file: h5py.File,
         split: str,
         envs: Iterable[str] | None,
         train_subjects: Iterable[str] | None,
@@ -93,27 +104,26 @@ class H5MMFiDataset(Dataset):
         random_val_ratio: float,
         seed: int,
     ) -> np.ndarray:
-        num_total = h5_file["action"].shape[0]
-        environments = [_decode_bytes(e) for e in h5_file["environment"][:]]
-        samples = [_decode_bytes(s) for s in h5_file["sample"][:]]
+        num_total = len(self._actions_h5)
+        env_list = [str(e) for e in self._envs_h5]
+        sample_list = [str(s) for s in self._samples_h5]
 
         env_set = set(envs) if envs else None
         subject_set = set(train_subjects) if train_subjects else None
 
         candidate_indices: list[int] = []
         for i in range(num_total):
-            if env_set is not None and environments[i] not in env_set:
+            if env_set is not None and env_list[i] not in env_set:
                 continue
-            if subject_set is not None and samples[i] not in subject_set:
+            if subject_set is not None and sample_list[i] not in subject_set:
                 continue
             candidate_indices.append(i)
 
-        # same_subject_random split within each sample group
         if split != "all":
             rng = random.Random(seed)
             grouped: dict[str, list[int]] = {}
             for idx in candidate_indices:
-                grouped.setdefault(samples[idx], []).append(idx)
+                grouped.setdefault(sample_list[idx], []).append(idx)
 
             train_indices: list[int] = []
             val_indices: list[int] = []
@@ -156,17 +166,14 @@ class H5MMFiDataset(Dataset):
         frame_idx = int(self.indices[index])
 
         csi_amp = np.asarray(h5_file["csi_amplitude"][frame_idx], dtype=np.float32)
-        keypoints_coco = np.asarray(h5_file["keypoints"][frame_idx], dtype=np.float32)
 
         # Time resample: (3, 114, 10) -> (3, 114, 64)
         csi_amp = _resample_time_h5(csi_amp, target_packets=self.time_packets)
 
-        # Transpose to (M, NR, NS) = (64, 3, 114)
-        csi_amp = np.transpose(csi_amp, (2, 0, 1)).astype(np.float32)
+        # Transpose to (M, NR, NS) = (64, 3, 114); .astype makes it contiguous
+        csi_amp = np.transpose(csi_amp, (2, 0, 1)).astype(np.float32, copy=False)
 
         # Normalize / magnitude-align CSI input.
-        # H5 data is pre-normalized to [0,1] during building (amplitude_normalization
-        # attr).  Re-applying global_minmax here would double-normalize — fixed.
         if self.normalize == "global_minmax":
             if not self._amp_pre_normalized:
                 csi_amp = normalize_global_minmax(
@@ -174,11 +181,8 @@ class H5MMFiDataset(Dataset):
                     train_min=self.amp_train_min,
                     train_max=self.amp_train_max,
                 )
-            # else: already [0,1] — double-norm bug avoided
         elif self.normalize == "global_zscore":
-            # Global center + scale: preserves inter-sample amplitude relationships
-            # while matching the ~N(0,1) input magnitude the model expects.
-            csi_amp = (csi_amp - 0.5) * 6.0  # [0,1] → [-3, +3]
+            csi_amp = (csi_amp - 0.5) * 6.0
         elif self.normalize == "zscore":
             csi_amp = normalize_csi(csi_amp, mode="zscore")
         elif self.normalize == "none":
@@ -186,17 +190,19 @@ class H5MMFiDataset(Dataset):
         else:
             raise ValueError(f"Unknown normalize mode: {self.normalize}")
 
-        # COCO17 -> OpenPose18 keypoint conversion
-        keypoints_norm = self._normalize_keypoints(keypoints_coco)
+        # Keypoints preloaded at init — avoid HDF5 random read
+        keypoints_norm = self._normalize_keypoints(
+            self._keypoints_h5[frame_idx]
+        )
         kpts18 = coco17_to_openpose18(keypoints_norm)
 
         item: dict = {
-            "csi": torch.from_numpy(np.ascontiguousarray(csi_amp)),
+            "csi": torch.from_numpy(csi_amp),
             "kpts18": torch.from_numpy(np.ascontiguousarray(kpts18)),
             "meta": {
-                "env": _decode_bytes(h5_file["environment"][frame_idx]),
-                "subject": _decode_bytes(h5_file["sample"][frame_idx]),
-                "action": _decode_bytes(h5_file["action"][frame_idx]),
+                "env": str(self._envs_h5[frame_idx]),
+                "subject": str(self._samples_h5[frame_idx]),
+                "action": str(self._actions_h5[frame_idx]),
                 "frame_idx": int(frame_idx),
             },
         }
