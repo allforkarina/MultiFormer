@@ -152,7 +152,7 @@ with h5py.File(h5_path, "r+") as f:
 
 | 阶段 | 文件 | 操作 | 状态 |
 |------|------|------|------|
-| 1 | `scripts/check_h5_csi_range.py` | 新建 (诊断脚本) | complete |
+| 1 | `scripts/diagnostic/check_h5_csi_range.py` | 新建 (诊断脚本) | complete |
 | 2.1 | `data/h5_dataset.py` | 修复二次归一化 + 归一化分发逻辑 | complete |
 | 2.2 | `configs/E01_B1.yaml` | 新建 (global_zscore 变体) | complete |
 | 2.2 | `configs/E01_B2.yaml` | 新建 (zscore 变体) | complete |

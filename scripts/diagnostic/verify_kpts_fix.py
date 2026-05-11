@@ -18,7 +18,7 @@ import torch
 from torch.utils.data import DataLoader
 
 # Allow running from project root
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from train import build_dataset, load_config
 from data.heatmap_gt import OPENPOSE_18_NAMES

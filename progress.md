@@ -40,7 +40,7 @@
 - [x] 更新 progress.md
 
 ### 实验 A 实现
-- [x] 创建 `scripts/check_h5_csi_range.py` — H5 CSI 二次归一化诊断脚本
+- [x] 创建 `scripts/diagnostic/check_h5_csi_range.py` — H5 CSI 二次归一化诊断脚本
 - [x] 在 Linux 服务器执行脚本，确认 **CSI 已被预归一化到 [0,1]**
   - raw max=0.9354, attr amplitude_train_max=57.1957 → 二次归一化确认
   - `amplitude_normalization: train_global_minmax` → 与关键点 bug 同性质
