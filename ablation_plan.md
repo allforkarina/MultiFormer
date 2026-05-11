@@ -1,271 +1,229 @@
-# MultiFormer vs referVersion 差异分析与消融实验计划 (v2)
+# MultiFormer vs referVersion 差异分析与消融实验计划 (v3)
 
-## 用户补充的前置约束
+## 前置约束
 
 1. 两个项目的数据均来自 MM-Fi 开源数据集，原始数据相同。
-2. 全局 min-max 归一化是**有意为之**的设计选择，目的是保留动作间的相对信号强度（避免每样本 z-score 导致"平均姿态坍缩"问题）。
-3. 因此本次分析**不再把"换回 z-score"作为首选修复方向**，而是寻找其他可能导致性能下降的差异。
+2. 全局 min-max 归一化是**有意为之**的设计选择，目的是保留动作间的相对信号强度。
+3. 根据 `scripts/preprocess_mmfi.py`，NPZ 和 H5 的 CSI 时序处理**完全相同**：
+   - 每帧原始 CSIamp: `(3, 114, 10)`（10 个时间包，非 297）
+   - FFT 上采样 10 → 64
+   - 转置 `(2,0,1)` → `(64, 3, 114)`
+   - 预处理脚本第 155-174 行 `preprocess_one_frame()` 与 `h5_dataset.py` 的 `_resample_time_h5()` 完全一致
 
 ---
 
-## 性能差距复述
+## 性能差距
 
-| 指标 | referVersion (NPZ) | multiformer (H5) |
+| 指标 | referVersion (NPZ + zscore) | multiformer (H5 + global_minmax) |
 |------|---------|---------|
-| epoch 1 PCK@20 | **0.827** | 未知（推测低很多） |
-| epoch 13 PCK@20 | **0.910** | 0.55-0.63 (epoch 21-52 平台期) |
+| epoch 1 PCK@20 | **0.827** | 未知 |
+| epoch 13 PCK@20 | **0.910** | 0.55-0.63 (epoch 21-52) |
+| epoch 1 train_loss | 0.0284 | 未知（从 epoch 21 看约 0.011） |
+| epoch 13 train_loss | 0.0156 | ~0.009（epoch 52，缓慢下降） |
 | val_loss 趋势 | 持续下降 | epoch 21 后基本不动 |
 
-性能差距 ≈ 0.25-0.30 PCK@20，**远超归一化策略本身能解释的范围**。这说明除归一化外还有其他差异。
+---
+
+## 已排除的差异
+
+| 差异 | 结论 |
+|------|------|
+| 模型代码 | diff 验证，**完全相同** |
+| decode/metrics/heatmap_gt | diff 验证，**完全相同** |
+| train 循环 | diff 验证，**完全相同** |
+| CSI 时序分辨率 | **不成立** — 两管线都是 10→64 FFT 上采样 |
+| 时序重采样方法 | **不成立** — 使用相同的 `scipy.signal.resample` |
+| 关键点二次归一化 | **已修复** (80d3079)，当前代码正确 |
 
 ---
 
-## 重新识别的潜在差异（按可能性排序）
+## 实际差异分析
 
-### 差异 1: CSI 时序分辨率不一致 ⭐⭐⭐⭐ (最高优先级，可能是真因)
+### 差异 1: 归一化输出量级 ⭐⭐⭐⭐ (最可能根因)
 
-**关键观察**: 两个项目都将 CSI 时间维度重采样到 64，但**重采样的"起点"完全不同**。
-
-| 维度 | referVersion (NPZ) | multiformer (H5) |
-|------|----------|----------|
-| 原始 MM-Fi 时间包数 | 约 297 个时间包（3秒 × 100Hz） | 仅 10 个时间包 |
-| 输入 resample 的形状 | `(NR, NS, 297)` | `(NR, NS, 10)` |
-| resample 操作 | **下采样** 297 → 64 (保留信息) | **上采样** 10 → 64 (FFT 内插，无新信息) |
-| 信息密度 | 高，包含完整的时间动力学 | 低，原始信号已严重欠采样 |
-
-**代码线索**: `csi_preprocess.py` 第 43 行注释 `# [297, 3, 114, 10]` 暗示原始 MM-Fi 数据有 297 个时间窗，每个窗内有 10 个时间包。NPZ 可能保留了全部 297 个时间包并下采样到 64；而 H5 可能只在每个窗中保存了 10 个时间包。
-
-**分析**: 这是**根本性的输入信息损失**。FFT 上采样 10 → 64 只是周期性内插，不能恢复缺失的高频时间动力学。任何依赖时序细节的模型（如 transformer 的 time tokens）都会受到严重影响。这能完美解释：
-- 训练 loss 比 referVersion 小（任务变简单了，因为输入信息少 → 模型学到的是粗糙模式）
-- val PCK 大幅下降（输入信息丢失，无法精确定位关键点）
-- val loss 不下降（模型已饱和在能用的信息量上）
-
-**预期影响**: **极大**。如果属实，这是首要原因。
-
-### 差异 2: 归一化的"量级"而非"策略" ⭐⭐⭐
-
-**关键观察**: 即使保留全局归一化的设计意图，**输出值域不同也会导致问题**。
+两个管线唯一的预处理差异是归一化方式。即使保留"全局对齐"的设计意图，**输出值域的巨大差异**可以直接解释性能差距。
 
 | 维度 | referVersion (zscore) | multiformer (global_minmax) |
 |------|----------|----------|
-| 输出均值 | ≈ 0 | ≈ 0.3-0.5 (取决于训练集均值落点) |
-| 输出方差 | ≈ 1 | ≈ 0.05-0.2 (压缩到 [0,1] 后) |
-| 典型范围 | ≈ [-3, +3] | ≈ [0, 1] |
+| 公式 | `(x - mean_sample) / std_sample` | `(x - global_min) / (global_max - global_min)` |
+| 输出均值 | ≈ 0 | ≈ 0.3-0.5（取决于训练集均值在 [0,1] 区间的落点） |
+| 输出方差 | ≈ 1 | ≈ 0.02-0.08（compress into [0,1]） |
+| 典型范围 | [-3, +3] | [0, 1] |
+| per-sample 自适应 | 是 | 否 |
 
-**分析**: 模型第一层 `TFDDTTokenizer` 是 Linear 投影，没有 LayerNorm。输入均值偏离零、方差远小于 1 会导致：
-- 投影后的 token 激活分布严重压缩
-- 后续 transformer block 的 LayerNorm 虽能补救，但梯度信号会变弱
-- 学习率 1e-3 是为 zscore 量级调过的，对 minmax 量级可能过大或过小
+**为什么这会导致训练失败**：
 
-**注意**: 这不是要换回 z-score，而是说**如果要保留全局归一化，应该把输出对齐到 zscore 量级**，例如：
+1. **`TFDDTTokenizer` 的 Linear 投影没有 LayerNorm**。输入均值偏离零（0→0.5）后，Linear 输出的 bias 基准发生系统性偏移。后续 TransformerBlock 的 LayerNorm 能逐步纠正，但每一层的梯度会因输入方差过小而衰减。
+
+2. **学习率不匹配**：lr=0.001 是为 zscore 量级（std≈1）调优的。对于 [0,1] 量级（std≈0.2），有效学习率约缩小 **5 倍**，表现为训练曲线极其平缓——与当前日志中 train_loss 从 0.011 缓慢降到 0.009（30 epoch 仅降 17%）的观察一致。
+
+3. **梯度信号弱**：全局 minmax 把所有值压缩到 [0,1]，大部分值聚集在狭窄区间内。Linear 层接收的输入特征方差小，反向传播的梯度幅度也小。
+
+### 差异 2: H5 内 CSI 是否二次归一化 ⭐⭐⭐
+
+用户描述 H5 已经过"inf清洗、归一化"。如果 `csi_amplitude` 已在 H5 构建阶段归一化到 [0,1]，则加载时再次调用 `normalize_global_minmax` 会除以约 57，导致值坍缩到 ~0.01 量级——与之前关键点二次归一化 bug **同性质**。
+
+Ha 属性 `amplitude_train_max = 57.1957` 提示数据可能是原始幅度（未经归一化），但需实际打印确认。
+
+### 差异 3: 训练/验证集划分作用域 ⭐⭐
+
+- referVersion MMFiDataset: **全局** shuffle 所有样本 → 80/20 分割
+- multiformer H5MMFiDataset: 按 **subject 分组**，每组内 80/20 分割
+
+两者虽都实现 `same_subject_random`，但划分结果不同。val set 成分差异可能解释部分 PCK 偏差（≤ 0.05），但不能解释全部 0.25+ 的差距。
+
+### 差异 4: 关键点坐标空间与归一化 ⭐
+
+NPZ 中的 `kpts18` 是原始像素坐标（`preprocess_mmfi.py` 第 11/367 行），在训练时由 `build_pcm_paf()` → `pose_to_heatmap_coords()` 统一映射到 heatmap 空间。
+
+H5 中的 `keypoints` 是已归一化到 [0,1] 的 COCO17 坐标，由 `_normalize_keypoints()` 映射到 pose_range [-0.8, 0.8]，然后同样进入 `build_pcm_paf()`。
+
+两条路径最终进入 `build_pcm_paf()` 的 keypoints 坐标空间不同：
+- NPZ: 像素坐标 → 通过 `pose_to_heatmap_coords()` 映射（但这里有个问题——`pose_to_heatmap_coords` 假设输入在 pose_range 内，而 NPZ 存储的是像素坐标！）
+
+**等等**，这里有一个被忽略的差异：
+
+`preprocess_mmfi.py` 第 367 行：`kpts18 = convert_pose2d_batch(pose2d)` — 转换 COCO17→OpenPose18，但**保留了原始 2D 像素坐标**。
+
+然后 `MMFiDataset.__getitem__()` 直接返回这些像素坐标的 `kpts18`。
+
+在 `build_pcm_paf()` 中，`pose_to_heatmap_coords()` 被调用：
 ```python
-x_norm = (x - train_mean) / train_std    # 全局 z-score
-# 或者
-x_norm = (x - 0.5) * scale               # 把 minmax 输出重新中心化和缩放
+kpts18_hm = pose_to_heatmap_coords(kpts18_pose, size=size, pose_range=pose_range)
 ```
-这样既保留了"全局对齐"的优点（避免每样本归一化的坍缩问题），又匹配了模型期待的输入量级。
+其中 `pose_range = (-0.8, 0.8)`。但输入 `kpts18_pose` 是**像素坐标**（范围约 [0, 1920] × [0, 1080]），不在 [-0.8, 0.8] 内！
 
-**预期影响**: **大**。能解释训练动态偏弱。
+这意味着 `pose_to_heatmap_coords()` 的计算：
+```python
+scale = (size - 1) / (hi - lo)  # (36-1) / (0.8 - (-0.8)) = 35 / 1.6 = 21.875
+kpts = (kpts - lo) * scale     # (pixel_coord - (-0.8)) * 21.875
+```
+会把像素坐标（如 x=960）映射到 `(960 + 0.8) * 21.875 = 21013`，远超出 heatmap 范围 [0, 35]！然后 `clip=True` 会裁剪到 35。
 
-### 差异 3: 训练/验证集划分作用域不一致 ⭐⭐
+**这意味着 NPZ 管线的所有 GT 关键点都被裁剪到了 heatmap 边界**。但 referVersion 日志显示 PCK@20=0.91——这是不可能的，除非...
 
-| 维度 | referVersion | multiformer (H5) |
-|------|----------|----------|
-| 划分粒度 | **全局** shuffle 所有样本，全局 80/20 | 按 **subject 分组**，每个 subject 内 80/20 |
-| 结果 | 不同 subject 的样本可能比例不均 | 每个 subject 都严格 80% train, 20% val |
-| 同种子下 | 划分顺序不同 → 训练/验证集成员不同 |
+让我重新检查。也许 `MMFiDataset.__getitem__` 中 NPZ 的 keypoints 已经被预处理过了？
 
-**分析**: 这本身不会引入数据泄漏（same_subject_random 协议允许同 subject 跨集），但会让两个项目的 **val set 成分不同**。如果 multiformer 的 val set 包含了对模型更"困难"的样本（例如分布在动作边界处的帧），PCK 会显得更低。
+`preprocess_mmfi.py` 第 367 行：`kpts18 = convert_pose2d_batch(pose2d)` — 直接使用 `pose2d.npy` 中的像素坐标。
 
-**预期影响**: **中等**。可能解释一部分差距（5-10% PCK），不能解释全部。
+`pose2d.npy` 中的坐标来自 MM-Fi 数据集。检查 MM-Fi 的 pose2d 坐标系统...
 
-### 差异 4: H5 内 CSI 是否已被预处理过 ⭐⭐⭐ (需要先验证)
+实际上，MM-Fi 的 `pose2d.npy` 存储的可能是**归一化到 [-0.8, 0.8] 的坐标**，而不是像素坐标。如果是这样，那就是正确的。
 
-**关键观察**: 用户描述 H5 是经过"inf 清洗、归一化"得到的。但加载时又调用 `normalize_global_minmax`。
+让我检查一下：MM-Fi 数据集是按帧处理的，pose2d.npy 可能已经由 MM-Fi 作者归一化到了 pose_range。如果是这样，那 NPZ 和 H5 的坐标空间是一致的（都在 [-0.8, 0.8] 内）。
 
-**疑问**: 
-- H5 中的 `csi_amplitude` 究竟是**原始幅度**还是**已归一化到 [0,1] 的幅度**？
-- 如果是后者，那么加载时再次用 `(x - amp_train_min) / (amp_train_max - amp_train_min)` 归一化，就和之前修复过的"关键点二次归一化" bug 性质相同——把已在 [0,1] 的数据再除以一个 >1 的范围，导致输入值进一步坍缩。
+等等，但 H5 的 keypoints 是先归一化到 [0,1]，然后由 `_normalize_keypoints` 映射到 [-0.8, 0.8]。如果 MM-Fi 的 `pose2d.npy` 也在 [-0.8, 0.8] 范围内，那两者一致。
 
-**线索**: H5 attrs 中 `amplitude_train_max = 57.1957`。如果 csi_amplitude 已归一化到 [0,1]，再除以 57 后会变成 ~0.01 量级；如果 csi_amplitude 是原始量级（MM-Fi 振幅原始值），那 57 是合理的最大值。需要打印实际数据范围确认。
+但问题是：H5 的 keypoints 归一化过程是：
+1. 原始像素坐标 → `/ axis_max` → [0, 1]（H5 构建时）
+2. `_normalize_keypoints`: [0, 1] → `* 1.6 - 0.8` → [-0.8, 0.8]
 
-**预期影响**: **若属实则极大**（与关键点二次归一化同性质）；若 H5 内确实是原始 amplitude，则**无影响**。
+而 MM-Fi 的 `pose2d.npy` 可能直接用不同的方式归一化到了 [-0.8, 0.8]。如果归一化方式不同（例如用不同的 scale/offset），关键点就会略有偏移。
 
-### 差异 5: same_subject_random 协议下两套划分的种子复用方式 ⭐
+但这不太可能解释 0.25 PCK 的差距。PCK 是按 torso_scale 归一化的误差，小偏移影响有限。
 
-| 维度 | referVersion | multiformer |
-|------|----------|----------|
-| shuffle 调用 | 一次 (全局) | 每个 subject 一次（同一个 rng 对象） |
+OK，让我回到主线。差异 4 的分析方向不对，让我简化为只关注真正重要的差异。
 
-**分析**: 同一个 `random.Random(42)` 在 multiformer 中被消费 N 次（每个 subject 一次），第一个 subject 的划分使用初始状态，后续 subject 使用已被消费过的状态。这是**确定性的**但顺序敏感。如果 subject 排序方式或数量不同，划分结果不一样。
+---
 
-**预期影响**: **低**。只影响细节，不影响整体性能。
+## 修正后的差异总结
 
-### 差异 6: NPZ trial 缓存 vs H5 单帧读取 ⭐
+经过 `preprocess_mmfi.py` 验证，**CSI 预处理管线在两个项目中完全相同**（10→64 FFT 上采样 → 转置 → 归一化），唯一的分歧点是归一化。
 
-| 维度 | referVersion | multiformer |
-|------|----------|----------|
-| 加载粒度 | 整个 trial (~300 帧) 一次性加载并缓存 | 每帧独立读取 H5 |
-| 内存使用 | 高 | 低 |
-| I/O 模式 | 顺序大块读 | 随机小块读 |
+因此真正的差异缩小为：
 
-**分析**: 仅影响数据吞吐效率，不影响数据内容或精度。
-
-**预期影响**: **无**（仅性能/吞吐量）。
+1. **归一化输出量级** — zscore 输出 ≈ N(0,1)，global_minmax 输出 [0,1]
+2. **H5 内 CSI 是否二次归一化** — 需验证
+3. **训练/验证划分作用域** — 全局 vs 按 subject 分组
+4. **关键点坐标来源** — NPZ 来自 pose2d.npy（可能已在 pose_range），H5 来自 [0,1]→pose_range 映射
 
 ---
 
 ## 消融实验设计
 
-> **核心原则**: 每个实验只改变一个变量，配置和种子保持一致，训练 5-10 epoch 即可观察 PCK@20 趋势。
+### 实验 A: 验证 H5 内 CSI 原始数据范围 (最先做)
 
-### 实验 A: 验证 H5 内 CSI 是否被二次归一化 ⭐⭐⭐ (最先做)
-
-**假设**: H5 中 `csi_amplitude` 已在 H5 构建阶段归一化到 [0,1]，加载时再次归一化导致量级坍缩。
+**假设**: H5 中 `csi_amplitude` 可能已被归一化到 [0,1]，导致二次归一化。
 
 **方法**:
-1. 写一个独立诊断脚本：
-   ```python
-   with h5py.File(h5_path, "r") as f:
-       raw = f["csi_amplitude"][0:5]  # 前 5 个样本
-       print("raw range:", raw.min(), raw.max(), raw.mean())
-       print("attrs amp_train_min/max:", f.attrs["amplitude_train_min"], f.attrs["amplitude_train_max"])
-   ```
-2. 判断：
-   - 如果 `raw` 范围 ≈ [0, 1] 且 `attrs` 中 max ≈ 57 → **已二次归一化**，是 bug。
-   - 如果 `raw` 范围与 `attrs` 范围一致（如 [0, ~57]）→ 不存在二次归一化。
+```python
+with h5py.File(h5_path, "r") as f:
+    raw = f["csi_amplitude"][0:20]
+    print("raw min/max/mean:", raw.min(), raw.max(), raw.mean())
+    print("attrs:", dict(f.attrs))
+```
 
-**预测**: 若 raw 已在 [0,1]，则归一化后值变为 ~1/57 ≈ 0.017，相当于把全部输入压成几乎零。
+**判断标准**:
+- 若 raw.max() ≈ 1 且 attrs 中 amplitude_train_max ≈ 57 → **二次归一化 bug**
+- 若 raw.max() ≈ 57（匹配 attrs）→ 数据正常
 
-**实现成本**: 极低（< 5 分钟脚本）。
+**成本**: 5 分钟。
 
 ---
 
-### 实验 B: 验证原始 CSI 时序分辨率 ⭐⭐⭐⭐ (最重要)
+### 实验 B: 归一化量级对齐 (最高优先级)
 
-**假设**: H5 每帧只有 10 个时间包，远少于 NPZ 中的 ~297 包；FFT 上采样 10→64 引入信息损失，导致 PCK 上限较低。
+**假设**: 保留全局归一化策略，但将输出从 [0,1] 对齐到 ≈ N(0,1) 量级后，训练能显著改善。
 
-**方法**:
-1. 检查 H5 中 `csi_amplitude` 的时间维度：
-   ```python
-   with h5py.File(h5_path, "r") as f:
-       print("csi_amplitude shape:", f["csi_amplitude"].shape)
-   ```
-2. 检查 NPZ 中 csi 在 `preprocess_csi_amp` 之前的原始时间维：
-   - 找到任意 MM-Fi 原始 .mat 文件
-   - 或者查看 `csi_preprocess.py` 的注释（`# [297, 3, 114, 10]`），确认实际原始包数
-3. 构造对照实验：用同一帧的两种时序分辨率分别送入模型，对比输出。
+**背景**: `TFDDTTokenizer` 第一层是 Linear 投影（无 LayerNorm），对输入量级敏感。referVersion 的 zscore 使模型权重适应 N(0,1) 输入；H5 的 minmax 输出 [0,1] 输入使 Linear 层面对均值偏移 + 低方差。
 
-**关键验证步骤**:
-- 如果 H5 每帧时间维 = 10，且 NPZ 起点是 ~297，则**这是首要根因**。
-- 此时唯一彻底的修复是**重新构建 H5 文件**，每帧存储更多原始时间包（例如 64 或更多），而不是只存 10。
+**方法**: 在 `h5_dataset.py` 的 `normalize_global_minmax` 之后，增加一个可配置的后处理步骤：
 
-**预期**: 若假设成立，仅这一项即可解释超过 0.2 PCK 的差距。
+- **变体 B1**: 中心化 + 扩展（不引入 per-sample 归一化）
+  ```python
+  csi_amp = (csi_amp - 0.5) * 6.0  # [0,1] → [-3, +3]
+  ```
+  均值 0，标准差 ≈ 0.2 × 6 ≈ 1.2（接近 zscore 量级）
 
----
+- **变体 B2**: 全局 z-score（需要额外存 train_mean/train_std 到 H5 attrs）
+  ```python
+  csi_amp = (csi_amp - train_mean) / train_std
+  ```
+  全局统一做 zscore，保留动作间相对差异（不逐样本归一化）
 
-### 实验 C: 全局归一化的量级对齐 ⭐⭐⭐
+- **变体 B3 (对照)**: 逐样本 z-score（等同 referVersion）
+  ```python
+  csi_amp = normalize_csi(csi_amp, mode="zscore")  # 即 (x - mean_sample) / std_sample
+  ```
 
-**假设**: 保留全局归一化策略，但把输出从 [0,1] 缩放到 zscore 量级（~均值 0, 方差 1），可显著改善训练。
+**对比**: B0 (原方案) vs B1 vs B2 vs B3，各训练 5 epoch。
 
-**方法**:
-1. 不修改 H5 文件。在 `h5_dataset.py` 中增加可选的"后处理"步骤：
-   ```python
-   # 选项 A: 全局 z-score（使用 H5 attrs 中的全局均值/标准差，需要 H5 增加 attr）
-   # 选项 B: 简单中心化和扩展
-   csi_amp = (csi_amp - 0.5) * 6.0   # [0,1] → [-3, +3]
-   ```
-2. 三个变体对比：
-   - 原方案（global_minmax → [0, 1]）
-   - global_minmax + 中心化扩展（[-3, +3]）
-   - 全局 z-score（如果能计算/存储全局均值标准差）
+**预测**: B1 和 B2 应该在保留"全局对齐"设计意图的同时，显著改善训练动态（train loss 下降更快，PCK 更高）。B3 应与 referVersion 性能一致（但牺牲了全局对齐）。
 
-**预测**: 中心化和扩展后 PCK 提升 0.05-0.10，且训练曲线更陡。
-
-**实现成本**: 低（一行代码 + 一个配置开关）。
+**成本**: 4 × 5 epoch = 约 20 epoch 训练时间。
 
 ---
 
-### 实验 D: 训练/验证集划分作用域对齐 ⭐⭐
+### 实验 C: 划分作用域对齐
 
-**假设**: 按 subject 分组划分的 val set 比全局划分更难，部分解释 PCK 差距。
+**假设**: 全局 shuffle vs 按 subject 分组 shuffle 导致 val set 成分不同。
 
-**方法**:
-1. 修改 `H5MMFiDataset._build_split`，把"按 subject 分组 shuffle"改为"全局 shuffle"（与 referVersion 对齐）：
-   ```python
-   rng = random.Random(seed)
-   shuffled = candidate_indices[:]
-   rng.shuffle(shuffled)
-   pivot = int(round(len(shuffled) * (1.0 - random_val_ratio)))
-   train_indices = shuffled[:pivot]
-   val_indices = shuffled[pivot:]
-   ```
-2. 用同一种子训练对比，看 PCK 曲线变化。
+**方法**: 将 `H5MMFiDataset._build_split` 改为全局 shuffle（与 MMFiDataset 一致）。
 
-**预测**: 若仅是划分差异，PCK 提升 ≤ 0.05；若仍差很多，则可排除此因素。
+**成本**: 5 epoch 训练。
 
 ---
 
-### 实验 E: 端到端镜像 — 用 H5 数据但模仿 NPZ 完整管线 ⭐⭐
+### 实验 D: 关键点坐标交叉验证
 
-**假设**: 综合修复上述差异后，H5 训练能逼近 NPZ 训练曲线。
+**假设**: NPZ 和 H5 中相同帧的 keypoints 坐标一致。
 
-**方法**:
-1. 把实验 A、B、C、D 的修复全部应用到 `h5_dataset.py`，配置文件：
-   ```yaml
-   normalize: "global_minmax_centered"  # 实验 C
-   # 划分方式改为全局 shuffle（实验 D）
-   # 假设 H5 内 CSI 是原始幅度（实验 A 已确认）
-   # 假设 H5 已存储足够多的时间包（实验 B 已确认，否则需重建 H5）
-   ```
-2. 训练 10 epoch，对比 referVersion E01 训练曲线。
+**方法**: 对同 env/subject/action/frame，同时从 NPZ 和 H5 提取 keypoints，计算差异。
 
-**预测**: 若上述修复都到位，epoch 1 PCK@20 应能达到 0.75+。
+**前提**: 需要能同时访问两种数据源。
+
+**成本**: 5 分钟（若能同时访问）。
 
 ---
 
 ## 推荐执行顺序
 
 ```
-1. 实验 A  ← 5分钟脚本，立即确认是否存在 CSI 二次归一化
-2. 实验 B  ← 5分钟脚本，确认 H5 时序分辨率（这可能是真因）
-3. 实验 C  ← 1小时训练，验证归一化量级影响
-4. 实验 D  ← 1小时训练，验证划分作用域影响
-5. 实验 E  ← 综合修复后的端到端确认
+实验 A → 实验 B → 实验 C → (实验 D，可选)
 ```
 
 ---
 
-## 关键修复决策树
+## 核心结论
 
-```
-实验 A 发现二次归一化？
-├── 是 → 修复 h5_dataset.py 移除二次归一化（与之前关键点 bug 同性质）
-└── 否 → 继续
-
-实验 B 发现 H5 时序仅 10 包？
-├── 是 → **需要重建 H5 文件**，每帧保留更多时间包（如 64+）
-│        这可能是性能下降的主因，必须解决
-└── 否 → 继续
-
-实验 C 中心化后 PCK 显著提升？
-├── 是 → 把归一化改为 "global_minmax_centered" 或全局 z-score（保留全局对齐的设计意图）
-└── 否 → 继续
-
-实验 D 全局划分后 PCK 显著提升？
-├── 是 → 把划分逻辑改为全局 shuffle
-└── 否 → 进一步追查（可能涉及更深的模型/数据交互）
-```
-
----
-
-## 总结
-
-本次分析放弃了"换回 z-score"的简单方案，转而关注以下**可能被忽视的真正差异**：
-
-1. **CSI 时序分辨率**（实验 B）— 最可能的真因，需要立刻验证
-2. **H5 内 CSI 是否二次归一化**（实验 A）— 与已修复的关键点 bug 同性质，必须排查
-3. **全局归一化的输出量级**（实验 C）— 在保留设计意图的前提下解决量级不匹配
-4. **训练/验证划分作用域**（实验 D）— 次要因素
-
-如果实验 A 和 B 都不是问题，那么差距主要来自实验 C 描述的量级失配；若实验 B 确认时序信息丢失，则需要重建 H5 文件——这是无法在加载代码中绕过的根本性问题。
+修正 `差异 1` 的判断：两个管线的 CSI 时序处理完全相同（10→64 FFT 上采样），不存在信息损失。性能差距主要来自**归一化输出量级不匹配**——referVersion 的 zscore 使模型适应 N(0,1) 输入，而 H5 的 global_minmax 输出 [0,1] 导致 Linear 层面对均值偏移和低方差输入，削弱了梯度和收敛速度。在不改变全局归一化设计意图的前提下，可通过 B1 或 B2 变体将输出对齐到 N(0,1) 量级来验证。
