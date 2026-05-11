@@ -37,4 +37,8 @@
 ### 规划输出
 - [x] 创建 ablation_plan.md (v1 → v2 → v3，每次修正)
 - [x] 创建 task_plan.md — 归一化消融实验实现计划
-- [x] 更新 progress.md (当前)
+- [x] 更新 progress.md
+
+### 实验 A 实现
+- [x] 创建 `scripts/check_h5_csi_range.py` — H5 CSI 二次归一化诊断脚本
+- [ ] 在 Linux 服务器执行脚本，返回输出供分析
