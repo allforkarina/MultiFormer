@@ -32,6 +32,9 @@
 - `train.py` — build_dataset 支持 H5 数据源分发
 - `configs/default.yaml` — Linux 服务器路径和 dataset_type 字段
 
+### Bug 修复 (2026-05-11)
+- `data/h5_dataset.py:_normalize_keypoints` — 移除 scale 除法（关键点已在 HDF5 构建时归一化到 [0,1]）
+
 ### 不动文件
 - `models/` — 全部
 - `decode/pose_decoder.py`
@@ -58,3 +61,27 @@ HDF5 mmfi_pose.h5
        ↓
   MultiFormer.forward()
 ```
+
+---
+
+## Bug 修复: 关键点二次归一化 (2026-05-11)
+
+### 问题
+`_normalize_keypoints` 对 HDF5 中已归一化到 [0,1] 的关键点再次除以 axis_max，导致所有关键点坍缩到 heatmap 原点 (0,0)，模型学到退化模式（loss≈0, PCK=0）。
+
+### 修复
+移除 `_normalize_keypoints` 中的 scale 除法。关键点已在 HDF5 构建阶段完成归一化：
+```
+Before: kpts / kp_scale * (hi-lo) + lo  → 二次归一化！
+After:  kpts * (hi-lo) + lo              → 正确: [0,1] → [pose_min, pose_max]
+```
+
+### 验证步骤
+1. 修改后检查 keypoints 是否在 [-0.8, 0.8]
+2. 检查 PCM 峰值是否分布在不同热力图位置
+3. 初始 loss 应在 0.02-0.05 范围
+4. 训练几 epoch 后 loss 应正常下降
+5. PCK 应 > 0
+
+### 影响文件
+- `data/h5_dataset.py` — `_normalize_keypoints` 方法

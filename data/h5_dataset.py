@@ -140,9 +140,8 @@ class H5MMFiDataset(Dataset):
         return self._h5_file
 
     def _normalize_keypoints(self, kpts: np.ndarray) -> np.ndarray:
+        """Map keypoints from [0, 1] (pre-normalized during H5 creation) to pose_range."""
         kpts = kpts.copy()
-        kpts[:, 0] = kpts[:, 0] / self.kp_x_scale
-        kpts[:, 1] = kpts[:, 1] / self.kp_y_scale
         lo, hi = self.pose_range
         kpts = kpts * (hi - lo) + lo
         return kpts.astype(np.float32)
