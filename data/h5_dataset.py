@@ -38,6 +38,7 @@ class H5MMFiDataset(Dataset):
         random_val_ratio: float = 0.2,
         seed: int = 42,
         time_packets: int = 64,
+        subcarrier_mode: str = "keep",
         normalize: str = "global_minmax",
         heatmap_size: int = 36,
         heatmap_sigma: float = 1.5,
@@ -45,6 +46,7 @@ class H5MMFiDataset(Dataset):
         pose_range: tuple[float, float] = (-0.8, 0.8),
         build_targets: bool = True,
     ) -> None:
+        self._h5_file: h5py.File | None = None  # must be first for __del__ safety
         if split not in {"train", "val", "test", "all"}:
             raise ValueError(f"split must be one of train/val/test/all, got {split}")
         self.h5_path = Path(h5_path)
@@ -56,7 +58,6 @@ class H5MMFiDataset(Dataset):
         self.paf_width = paf_width
         self.pose_range = pose_range
         self.build_targets = build_targets
-        self._h5_file: h5py.File | None = None
 
         with h5py.File(self.h5_path, "r") as f:
             self.amp_train_min = float(f.attrs["amplitude_train_min"])

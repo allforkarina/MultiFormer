@@ -44,9 +44,9 @@ train:
   output_dir: "outputs/E01_B2"
   log_every: 20
   save_every: 5
-  early_stop_min_delta: 0.001
-  early_stop_patience: 1
-  early_stop_warmup: 3
+  early_stop_min_delta: 0.00001
+  early_stop_patience: 3
+  early_stop_warmup: 10
 
 eval:
   batch_size: 32
