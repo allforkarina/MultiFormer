@@ -3,7 +3,7 @@
 # 如需使用本地 NPZ 格式数据，设置 dataset.type 为 "npz"。
 dataset:
   type: "h5"                     # h5 (Linux HDF5) 或 npz (本地NPZ文件)
-  root: "/data/WiFiPose/dataset/mmfi_pose.h5"
+  root: "/data/WiFiPose/dataset/mmfi_pose_v2.h5"
   split: "same_subject_random"   # same_subject_random, subject_cross, random, all
   envs: ["env1"]                 # HDF5中env命名: env1-env4
   train_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]

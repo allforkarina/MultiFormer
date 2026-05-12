@@ -1,6 +1,6 @@
 dataset:
   type: "h5"
-  root: "/data/WiFiPose/dataset/mmfi_pose.h5"
+  root: "/data/WiFiPose/dataset/mmfi_pose_v2.h5"
   split: "same_subject_random"
   envs: ["env3"]
   train_subjects: ["S21", "S22", "S23", "S24", "S25", "S26", "S27", "S28", "S29", "S30"]
