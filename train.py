@@ -147,6 +147,18 @@ def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFi
             **common,
         )
 
+    if dataset_type == "memmap":
+        from data.memmap_dataset import MemmapDataset
+        return MemmapDataset(
+            data_dir=ds_cfg["root"],
+            envs=ds_cfg.get("envs"),
+            train_subjects=ds_cfg.get("train_subjects"),
+            test_subjects=ds_cfg.get("test_subjects"),
+            random_val_ratio=float(ds_cfg.get("random_val_ratio", 0.2)),
+            seed=int(ds_cfg.get("seed", 42)),
+            **common,
+        )
+
     return MMFiDataset(
         root=ds_cfg["root"],
         protocol=ds_cfg.get("split", "subject_cross"),
