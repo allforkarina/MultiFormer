@@ -119,7 +119,7 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFiDataset | H5MMFiDataset:
+def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFiDataset | H5MMFiDataset | MemmapDataset:
     ds_cfg = cfg["dataset"]
     csi_cfg = cfg["csi"]
     hm_cfg = cfg["heatmap"]
