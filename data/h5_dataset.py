@@ -138,7 +138,10 @@ class H5MMFiDataset(Dataset):
 
     def _get_h5(self) -> h5py.File:
         if self._h5_file is None:
-            self._h5_file = h5py.File(self.h5_path, "r")
+            # Large chunk cache (512 MB) avoids repeated gzip decompression of CSI chunks
+            self._h5_file = h5py.File(
+                self.h5_path, "r", rdcc_nbytes=512 * 1024 * 1024
+            )
         return self._h5_file
 
     def __getitem__(self, index: int) -> dict:
