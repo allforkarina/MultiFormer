@@ -37,6 +37,8 @@ class MemmapDataset(Dataset):
         test_subjects: Iterable[str] | None = None,
         random_val_ratio: float = 0.2,
         seed: int = 42,
+        time_packets: int = 64,
+        subcarrier_mode: str = "keep",
         normalize: str = "global_minmax",
         heatmap_size: int = 36,
         heatmap_sigma: float = 1.5,

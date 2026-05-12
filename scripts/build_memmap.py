@@ -81,14 +81,14 @@ def sanitize_csi(x: np.ndarray) -> np.ndarray:
     finite = np.isfinite(x)
     if finite.all():
         return x
-    fill = float(np.median(x[finite])) if finite.any() else 0.0
-    return np.nan_to_num(x, nan=fill, posinf=fill, neginf=fill).astype(np.float32)
+    fill = float(np.median(x[finite])) if finite.any() else 0.0                         # finite value's median
+    return np.nan_to_num(x, nan=fill, posinf=fill, neginf=fill).astype(np.float32)      # use full to replace nan
 
 
 def preprocess_csi_one_frame(csi_amp: np.ndarray) -> np.ndarray:
     """sanitize → resample(10→64) → transpose → (64, 3, 114), NOT normalized."""
-    csi_amp = sanitize_csi(np.asarray(csi_amp, dtype=np.float32))
-    csi_amp = sanitize_csi(resample(csi_amp, TIME_PACKETS, axis=-1))
+    csi_amp = sanitize_csi(np.asarray(csi_amp, dtype=np.float32))                       # sanitize the nan
+    csi_amp = sanitize_csi(resample(csi_amp, TIME_PACKETS, axis=-1))                    # upsample the time shot
     return np.transpose(csi_amp, (2, 0, 1)).astype(np.float32, copy=False)
 
 
@@ -103,22 +103,22 @@ def _valid_point(point: np.ndarray) -> bool:
 
 def coco17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
     kpts17 = np.asarray(kpts17, dtype=np.float32)
-    kpts18 = np.zeros((18, 2), dtype=np.float32)
+    kpts18 = np.zeros((18, 2), dtype=np.float32)                # initialize with zeros
     valid = np.zeros(18, dtype=bool)
     for op_idx, coco_idx in COCO17_TO_OPENPOSE18.items():
-        p = kpts17[coco_idx]
+        p = kpts17[coco_idx]                                    # read origin kpts
         if _valid_point(p):
             kpts18[op_idx] = p
             valid[op_idx] = True
-    l_sh, r_sh = kpts17[5], kpts17[6]
+    l_sh, r_sh = kpts17[5], kpts17[6]                           # left and right -> nose
     if _valid_point(l_sh) and _valid_point(r_sh):
-        kpts18[1] = (l_sh + r_sh) * 0.5
+        kpts18[1] = (l_sh + r_sh) * 0.5                         # average to get nose.
         valid[1] = True
     elif _valid_point(l_sh):
         kpts18[1] = l_sh; valid[1] = True
     elif _valid_point(r_sh):
         kpts18[1] = r_sh; valid[1] = True
-    kpts18[~valid] = 0.0
+    kpts18[~valid] = 0.0                                        # set invalid points to 0
     return kpts18
 
 
