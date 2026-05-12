@@ -39,7 +39,7 @@ train:
   lr: 0.001
   lr_step: 15
   lr_gamma: 0.7
-  num_workers: 4
+  num_workers: 0
   device: "cuda"
   output_dir: "outputs/E01_B2"
   log_every: 20

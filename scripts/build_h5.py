@@ -375,7 +375,6 @@ def build_h5(
         f.create_dataset(
             "csi", data=all_csi,
             chunks=(cs, TIME_PACKETS, RX_ANTENNAS, SUBCARRIERS),
-            compression="gzip", compression_opts=4,
         )
         f.create_dataset("kpts18", data=all_kpts18, chunks=(cs, 18, 2))
         f.create_dataset("environment", data=all_envs.astype(str_dt))
