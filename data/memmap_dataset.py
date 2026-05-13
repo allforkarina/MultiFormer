@@ -65,7 +65,7 @@ class MemmapDataset(Dataset):
         self._csi = np.load(str(data_dir / CSI_FILES[normalize]), mmap_mode="r")
 
         # Keypoints — small enough to load entirely (~4 MB for 30K frames)
-        self._kpts18 = np.load(str(data_dir / "kpts18.npy"))
+        self._kpts18 = np.load(str(data_dir / "ground_truth.npy"))
 
         # Meta — tiny (~300 KB), load to RAM
         meta = np.load(str(data_dir / "meta.npz"), allow_pickle=True)

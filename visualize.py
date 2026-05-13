@@ -6,9 +6,8 @@ from pathlib import Path
 
 import torch
 
-from data.mmfi_dataset import MMFiDataset
 from decode.pose_decoder import decode_single_person
-from train import build_model, load_config
+from train import build_dataset, build_model, load_config
 from utils.viz import render_compare
 
 
@@ -36,21 +35,8 @@ def main() -> None:
     out_root = Path(args.out)
     pose_range = (float(cfg["heatmap"].get("pose_min", -0.8)), float(cfg["heatmap"].get("pose_max", 0.8)))
 
-    for env in cfg["dataset"].get("envs", ["E01", "E02", "E03", "E04"]):
-        dataset = MMFiDataset(
-            root=cfg["dataset"]["root"],
-            split="all",
-            protocol="all",
-            envs=[env],
-            time_packets=int(cfg["csi"].get("time_packets", 64)),
-            subcarrier_mode=cfg["csi"].get("subcarrier_mode", "keep"),
-            normalize=cfg["csi"].get("normalize", "zscore"),
-            amp_key=cfg["csi"].get("amp_key", "CSIamp"),
-            heatmap_size=int(cfg["heatmap"].get("size", 36)),
-            heatmap_sigma=float(cfg["heatmap"].get("sigma", 1.5)),
-            paf_width=float(cfg["heatmap"].get("paf_width", 1.0)),
-            pose_range=pose_range,
-        )
+    for env in cfg["dataset"].get("envs", ["env1"]):
+        dataset = build_dataset(cfg, "all")
         indices = list(range(len(dataset)))
         rng.shuffle(indices)
         for index in indices[:n_per_env]:

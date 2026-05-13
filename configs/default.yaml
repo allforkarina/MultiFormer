@@ -1,11 +1,7 @@
-# 默认配置 = E01 单环境实验，使用 Linux 服务器 HDF5 数据。
-# 4 个环境分别独立训练，详见 configs/E0{1..4}.yaml；不做跨域。
-# 如需使用本地 NPZ 格式数据，设置 dataset.type 为 "npz"。
 dataset:
-  type: "h5"                     # h5 (Linux HDF5) 或 npz (本地NPZ文件)
-  root: "/data/WiFiPose/dataset/mmfi_pose_v2.h5"
-  split: "same_subject_random"   # same_subject_random, subject_cross, random, all
-  envs: ["env1"]                 # HDF5中env命名: env1-env4
+  root: "/data/WiFiPose/dataset/mmfi_pose_v3"
+  split: "same_subject_random"
+  envs: ["env1"]
   train_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   test_subjects: ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10"]
   random_val_ratio: 0.2
@@ -15,9 +11,8 @@ csi:
   time_packets: 64
   rx_antennas: 3
   subcarriers: 114
-  subcarrier_mode: "keep"  # keep, learned64, resample64
-  normalize: "zscore"      # zscore, minmax, none
-  amp_key: "CSIamp"
+  subcarrier_mode: "keep"
+  normalize: "global_minmax"
 
 heatmap:
   size: 36

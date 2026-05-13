@@ -1,5 +1,4 @@
 dataset:
-  type: "memmap"
   root: "/data/WiFiPose/dataset/mmfi_pose_v3"
   split: "same_subject_random"
   envs: ["env1"]
@@ -14,7 +13,6 @@ csi:
   subcarriers: 114
   subcarrier_mode: "keep"
   normalize: "global_minmax"
-  amp_key: "CSIamp"
 
 heatmap:
   size: 36

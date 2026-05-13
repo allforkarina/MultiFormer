@@ -14,7 +14,7 @@ Output:
         csi_gminmax.npy  ← global_minmax normalized (N, 64, 3, 114) float32
         csi_gzscore.npy  ← global_zscore normalized (N, 64, 3, 114) float32
         csi_zscore.npy   ← per-sample zscore normalized (N, 64, 3, 114) float32
-        kpts18.npy       ← OpenPose18, pose_range (N, 18, 2) float32
+        ground_truth.npy ← OpenPose18, pose_range (N, 18, 2) float32
         meta.npz         ← environment, sample, action, frame_idx
         stats.json       ← normalization statistics
 
@@ -325,7 +325,7 @@ def main():
     np.save(str(dst_root / "csi_gminmax.npy"), csi_gminmax)
     np.save(str(dst_root / "csi_gzscore.npy"), csi_gzscore)
     np.save(str(dst_root / "csi_zscore.npy"),  csi_zscore)
-    np.save(str(dst_root / "kpts18.npy"),       all_kpts18)
+    np.save(str(dst_root / "ground_truth.npy"), all_kpts18)
     np.savez(str(dst_root / "meta.npz"),
              environment=all_envs, sample=all_subjects,
              action=all_actions, frame_idx=all_fidx)

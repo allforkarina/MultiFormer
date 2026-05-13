@@ -11,8 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data.mmfi_dataset import MMFiDataset
-from data.h5_dataset import H5MMFiDataset
+from data.memmap_dataset import MemmapDataset
 from decode.pose_decoder import decode_single_person
 from models.multiformer import MultiFormer
 from utils.metrics import pck_batch
@@ -119,57 +118,26 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MMFiDataset | H5MMFiDataset | MemmapDataset:
+def build_dataset(cfg: dict, split: str, max_samples: int | None = None) -> MemmapDataset:
     ds_cfg = cfg["dataset"]
     csi_cfg = cfg["csi"]
     hm_cfg = cfg["heatmap"]
-    dataset_type = ds_cfg.get("type", "npz")
 
-    common = dict(
+    return MemmapDataset(
+        data_dir=ds_cfg["root"],
         split=split,
-        time_packets=int(csi_cfg.get("time_packets", 64)),
-        subcarrier_mode=csi_cfg.get("subcarrier_mode", "keep"),
-        normalize=csi_cfg.get("normalize", "zscore"),
-        heatmap_size=int(hm_cfg.get("size", 36)),
-        heatmap_sigma=float(hm_cfg.get("sigma", 1.5)),
-        paf_width=float(hm_cfg.get("paf_width", 1.0)),
-        pose_range=(float(hm_cfg.get("pose_min", -0.8)), float(hm_cfg.get("pose_max", 0.8))),
-    )
-
-    if dataset_type == "h5":
-        return H5MMFiDataset(
-            h5_path=ds_cfg["root"],
-            envs=ds_cfg.get("envs"),
-            train_subjects=ds_cfg.get("train_subjects"),
-            test_subjects=ds_cfg.get("test_subjects"),
-            random_val_ratio=float(ds_cfg.get("random_val_ratio", 0.2)),
-            seed=int(ds_cfg.get("seed", 42)),
-            **common,
-        )
-
-    if dataset_type == "memmap":
-        from data.memmap_dataset import MemmapDataset
-        return MemmapDataset(
-            data_dir=ds_cfg["root"],
-            envs=ds_cfg.get("envs"),
-            train_subjects=ds_cfg.get("train_subjects"),
-            test_subjects=ds_cfg.get("test_subjects"),
-            random_val_ratio=float(ds_cfg.get("random_val_ratio", 0.2)),
-            seed=int(ds_cfg.get("seed", 42)),
-            **common,
-        )
-
-    return MMFiDataset(
-        root=ds_cfg["root"],
-        protocol=ds_cfg.get("split", "subject_cross"),
         envs=ds_cfg.get("envs"),
         train_subjects=ds_cfg.get("train_subjects"),
         test_subjects=ds_cfg.get("test_subjects"),
         random_val_ratio=float(ds_cfg.get("random_val_ratio", 0.2)),
         seed=int(ds_cfg.get("seed", 42)),
-        max_samples=max_samples if max_samples is not None else ds_cfg.get("max_samples"),
-        amp_key=csi_cfg.get("amp_key", "CSIamp"),
-        **common,
+        time_packets=int(csi_cfg.get("time_packets", 64)),
+        subcarrier_mode=csi_cfg.get("subcarrier_mode", "keep"),
+        normalize=csi_cfg.get("normalize", "global_minmax"),
+        heatmap_size=int(hm_cfg.get("size", 36)),
+        heatmap_sigma=float(hm_cfg.get("sigma", 1.5)),
+        paf_width=float(hm_cfg.get("paf_width", 1.0)),
+        pose_range=(float(hm_cfg.get("pose_min", -0.8)), float(hm_cfg.get("pose_max", 0.8))),
     )
 
 

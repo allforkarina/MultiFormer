@@ -1,103 +1,197 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# MultiFormer — WiFi-based Human Pose Estimation
 
 ## Project overview
 
-MultiFormer — WiFi CSI-based human pose estimation (17/18 keypoints). Uses a transformer architecture with dual time-frequency attention for reconstructing human pose heatmaps from WiFi channel state information.
+MultiFormer is a Transformer-based architecture for 2D human pose estimation from WiFi CSI (Channel State Information) signals. The model takes CSI amplitude data as input and outputs Part Confidence Maps (PCM) and Part Affinity Fields (PAF), which are then decoded into 18-keypoint human poses (OpenPose format).
 
-## Commands
+## Dataset
 
-```bash
-# Training (env-specific configs: E01-E04)
-python train.py --config configs/E01.yaml
+The project uses the **MM-Fi** dataset with memory-mapped `.npy` files for efficient training I/O.
 
-# Evaluation
-python eval.py --config configs/E01.yaml --ckpt outputs/E01/best.pth
+### Memmap dataset (`data/memmap_dataset.py`)
 
-# Visualization (save GT vs prediction comparison images)
-python visualize.py --config configs/E01.yaml --ckpt outputs/E01/best.pth --out outputs/viz
-```
+Memory-mapped `.npy` files built by `scripts/build_memmap.py`. CSI is pre-normalized at build time (three variants stored: `global_minmax`, `global_zscore`, `zscore`). At training time, the dataset selects the variant specified by `csi.normalize` in the config.
+
+- **Format**: Directory of `.npy` files: `csi_global_minmax.npy`, `csi_global_zscore.npy`, `csi_zscore.npy`, `ground_truth.npy`, `meta.npz`, `stats.json`
+- **CSI shape**: `(N, 64, 3, 114)` — pre-resampled to 64 time packets
+- **Normalization**: Pre-computed at build time; selected at dataset init via `normalize` parameter
+- **Keypoints**: Pre-converted COCO17→OpenPose18, stored as pixel coordinates
+- **I/O**: Uses `np.memmap` for zero-copy reads; benefits from OS page cache
+- **Use case**: Primary training backend for all environments
+
+### Data split logic
+
+The dataset uses **per-subject grouped random split**:
+1. Group all frame indices by subject
+2. For each subject, shuffle its frames and split 80/20 (train/val) using `random_val_ratio`
+3. `split="train"` returns the 80% portion; `split="test"` returns the 20% portion
+4. `split="all"` returns all frames (for visualization)
+
+This ensures frames from the same subject don't leak between train and val.
 
 ## Model architecture
 
 ```
 CSI input (B, 64, 3, 114)
-  └─ TFDDTTokenizer         # Time-Frequency Dual-Dimensional Tokenizer
-       ├─ freq tokens (B, NS, embed_dim) via Linear(M·NR → embed_dim)
-       └─ time tokens (B, M, embed_dim)  via Linear(NS·NR → embed_dim)
-  └─ DualAttentionExtractor # 8 stacked TransformerBlocks per branch + ReconstructionLayer
-       ├─ freq_blocks → freq_map (B, 64, 36, 36)
-       └─ time_blocks → time_map (B, 64, 36, 36)
+  └─ TFDDTTokenizer                    # Time-Frequency Dual-Dimensional Tokenization
+       ├─ Optional subcarrier projection: Linear(114→64) when subcarrier_mode="learned64"
+       ├─ freq tokens (B, NS, embed_dim) via Linear(M·NR → embed_dim) + freq_pos_embed
+       └─ time tokens (B, M, embed_dim) via Linear(NS·NR → embed_dim) + time_pos_embed
+  └─ DualAttentionExtractor            # 8 stacked TransformerBlocks per branch + ReconstructionLayer
+       ├─ freq_blocks (8× TransformerBlock) → freq_recon → freq_map (B, 64, 36, 36)
+       ├─ time_blocks (8× TransformerBlock) → time_recon → time_map (B, 64, 36, 36)
        └─ cat → features (B, 128, 36, 36)
-  └─ MSFN                   # Multi-Stage Feature Network (3 stages)
-       ├─ HeatmapDecoder → pcm (B, 19, 36, 36), paf (B, 38, 36, 36)
-       └─ PAPM (Pose Attention Perception Module) between stages
+  └─ MSFN                              # Multi-Stage Feature Network (3 stages)
+       ├─ Stage 1: HeatmapDecoder → pcm (B, 19, 36, 36), paf (B, 38, 36, 36)
+       ├─ PAPM: channel + spatial attention refines features using stage-1 heatmaps
+       ├─ Stage 2: HeatmapDecoder → pcm, paf
+       ├─ PAPM: refine using stage-2 heatmaps
+       └─ Stage 3: HeatmapDecoder → pcm, paf
 ```
 
-Key modules:
-- `models/tfddt.py` — Tokenizes CSI into separate freq/time token streams with learned positional embeddings
-- `models/attention_extractor.py` — Parallel transformer branches (freq + time) with reconstruction heads
-- `models/heatmap_decoder.py` — 4-layer CNN trunk → bottleneck → PCM/PAF prediction heads
-- `models/papm.py` — Channel + spatial attention module that refines features using previous stage heatmaps
-- `models/msfn.py` — Stacks N HeatmapDecoders with PAPM inter-stage refinement
-- `models/multiformer.py` — Top-level module composing tokenizer → extractor → msfn
+### Key components
 
-## Data pipeline
+| Component | File | Description |
+|-----------|------|-------------|
+| `TFDDTTokenizer` | `models/multiformer.py` | Splits CSI into time and frequency token sequences with learnable position embeddings |
+| `DualAttentionExtractor` | `models/multiformer.py` | Parallel Transformer encoders for time and frequency domains, each with 8 blocks |
+| `ReconstructionLayer` | `models/multiformer.py` | Projects token sequences back to 2D feature maps (36×36) |
+| `MSFN` | `models/multiformer.py` | 3-stage refinement with PAPM attention between stages |
+| `PAPM` | `models/multiformer.py` | Pose Attention Perception Module: channel attention + spatial attention guided by previous stage heatmaps |
+| `HeatmapDecoder` | `models/multiformer.py` | CNN decoder: ConvTranspose2d → BatchNorm → ReLU → Conv2d → output (19 PCM + 38 PAF channels) |
 
-Two dataset backends, selected via `dataset.type` in config:
+### Output format
 
-| Config key | Backend | Format | Shape (raw) | Normalization |
-|------------|---------|--------|-------------|---------------|
-| `"npz"` | `data/mmfi_dataset.py:MMFiDataset` | NPZ per action | `(64, 3, 114)` | per-sample z-score |
-| `"h5"` | `data/h5_dataset.py:H5MMFiDataset` | Single HDF5 | `(3, 114, 10)` | configurable (4 modes) |
+- **PCM** (Part Confidence Maps): 19 channels (18 keypoints + background), 36×36 spatial
+- **PAF** (Part Affinity Fields): 38 channels (19 limbs × 2 for x,y vectors), 36×36 spatial
 
-Both return the same dict: `{"csi": (64,3,114), "kpts18": (18,2), "pcm": (19,36,36), "paf": (38,36,36), "meta": {...}}`
+## Configuration
 
-**HDF5 data flow** (server deployment):
-1. H5 attrs read at init: `amplitude_train_min/max`, `keypoint_x/y_scale`, `amplitude_normalization`
-2. Keypoints (~43 MB) and meta arrays (~5 MB) preloaded into RAM at init — no per-sample HDF5 read for these
-3. Per sample: read raw CSI `(3, 114, 10)` from HDF5 (only 1 HDF5 random read per sample)
-4. Time resample `10 → 64` via `scipy.signal.resample`
-5. Transpose to `(64, 3, 114)`
-6. Normalize according to `csi.normalize` config (see Config system below)
-7. COCO17 `(17,2)` → OpenPose18 `(18,2)` keypoint conversion via `data/heatmap_gt.py:coco17_to_openpose18()`
-8. Build PCM (19ch) and PAF (38ch) heatmap targets
+All configs are YAML files in `configs/`. Key sections:
 
-**NPZ data flow** (local):
-1. Load pre-resampled CSI `(64, 3, 114)` from compressed `.npz`
-2. Per-sample z-score or min-max normalization via `data/csi_preprocess.py:normalize_csi()`
-3. Keypoints already in OpenPose18 format
+| Section | Key fields |
+|---------|-----------|
+| `dataset` | `root`, `envs`, `train_subjects`, `test_subjects`, `random_val_ratio`, `seed` |
+| `csi` | `time_packets` (64), `rx_antennas` (3), `subcarriers` (114), `subcarrier_mode` ("keep"/"resample64"/"learned64"), `normalize` ("global_minmax"/"global_zscore"/"zscore") |
+| `heatmap` | `size` (36), `sigma` (1.5), `paf_width` (1.0), `pose_min`/`pose_max` (-0.8/0.8) |
+| `model` | `embed_dim` (1296), `num_heads` (8), `depth` (8), `dropout` (0.1), `recon_channels` (64), `feature_channels` (128), `decoder_hidden` (512), `stages` (3) |
+| `train` | `epochs`, `batch_size`, `lr`, `lr_step`, `lr_gamma`, `num_workers`, `device`, `output_dir`, `early_stop_*` |
+| `eval` | `batch_size`, `pck_thresholds`, `peak_threshold` |
+| `visualize` | `n_per_env`, `seed` |
 
-## Preprocessing (`data/csi_preprocess.py`)
+### Config files
 
-- `sanitize_csi()` — Replace NaN/Inf with median-fill
-- `resample_time()` — Resample time packets via FFT (scipy)
-- `resample_subcarriers()` — Resample subcarrier dimension
-- `normalize_csi()` — Per-sample z-score or min-max
-- `normalize_global_minmax()` — Global min-max using pre-computed stats
-- `preprocess_csi_amp()` — End-to-end pipeline for NPZ format
+| File | Environment | Subjects | Normalization | Notes |
+|------|------------|----------|---------------|-------|
+| `default.yaml` | env1 | S01-S10 | global_minmax | Default config |
+| `E01.yaml` | env1 | S01-S10 | global_minmax | Baseline |
+| `E01_B1.yaml` | env1 | S01-S10 | global_zscore | Ablation: zscore normalization |
+| `E01_B2.yaml` | env1 | S01-S10 | zscore | Ablation: per-sample zscore |
+| `E02.yaml` | env2 | S11-S20 | global_minmax | Cross-env |
+| `E03.yaml` | env3 | S21-S30 | global_minmax | Cross-env |
+| `E04.yaml` | env4 | S31-S40 | global_minmax | Cross-env |
 
-## Keypoint coordinates
+### Normalization variants
 
-All keypoints are in `pose_range` (default `[-0.8, 0.8]`). Heatmap targets use grid coordinates `[0, size-1]` (default size=36). Conversion functions in `data/heatmap_gt.py`:
-- `pose_to_heatmap_coords()` — Pose range → grid coords
-- `heatmap_to_pose_coords()` — Grid coords → pose range
-- `build_pcm_paf()` — OpenPose18 → PCM (19, H, W) + PAF (38, H, W)
+The `build_memmap.py` script pre-computes three normalization variants:
 
-## Config system
+| Config value | Description | Statistics source |
+|-------------|-------------|-------------------|
+| `global_minmax` | Min-max scaling to [0, 1] | Global min/max from train subjects |
+| `global_zscore` | Z-score standardization | Global mean/std from train subjects |
+| `zscore` | Per-sample z-score | Per-frame mean/std |
 
-Self-contained YAML files in `configs/`. No inheritance — each file is complete. Key sections:
-- `dataset` — `type` (`"h5"`|`"npz"`), `root`, `envs`, `train_subjects`, `test_subjects`, `random_val_ratio`, `seed`
-- `csi` — `time_packets` (64), `rx_antennas` (3), `subcarriers` (114), `subcarrier_mode`, `normalize` (one of: `global_minmax` / `global_zscore` / `zscore` / `none`)
-- `heatmap` — `size` (36), `sigma` (1.5), `paf_width` (1.0), `pose_min`/`pose_max`
-- `model` — `embed_dim` (1296), `num_heads` (8), `depth` (8), `dropout`, `stages` (3)
-- `train` — `epochs`, `batch_size`, `lr`, `lr_step`, `lr_gamma`, `num_workers`, `output_dir`, early-stop params
-- `eval` — `batch_size`, `pck_thresholds`, `peak_threshold`
+## Training
 
-## Evaluation metrics
+### Entry point
 
-- **PCK** (Percentage of Correct Keypoints) at configurable thresholds (default @20, @30, @40)
-- Based on torso-scale normalized distance between predicted and GT keypoints
-- `decode_single_person()` — Argmax peak extraction from PCM heatmaps
-- `decode_connections()` — NMS + Hungarian matching for multi-person (with PAF)
+```bash
+python train.py --config configs/E01.yaml
+```
+
+Additional flags:
+- `--max-train-samples N` / `--max-val-samples N`: Limit dataset size for debugging
+- `--overfit-batch`: Overfit on a single batch (200 steps per epoch)
+
+### Training loop
+
+1. `build_dataset(cfg, "train")` creates `MemmapDataset` with `split="train"`
+2. `build_dataset(cfg, "test")` creates `MemmapDataset` with `split="test"` for validation
+3. Multi-stage MSE loss: sum of MSE(pcm_pred, pcm_gt) + MSE(paf_pred, paf_gt) across all stages
+4. Adam optimizer with StepLR scheduler
+5. Early stopping: monitors train_loss improvement; stops if improvement < `early_stop_min_delta` for `early_stop_patience` consecutive epochs (after `early_stop_warmup`)
+
+### Evaluation metrics
+
+- **PCK** (Percentage of Correct Keypoints): computed at thresholds [0.2, 0.3, 0.4] (normalized by person bounding box)
+- Pose decoding: `decode_single_person()` finds peaks in PCM heatmaps above `peak_threshold`
+
+## Scripts
+
+### `scripts/build_memmap.py`
+
+Three-phase pipeline to build memory-mapped `.npy` files from raw MM-Fi data:
+
+1. **Phase 1 — Scan**: Walk the raw dataset directory (`{ACTION}/{SUBJECT}/`), collect all `.mat` (CSI) and `.npy` (pose2d) file paths
+2. **Phase 2 — Process**: For each frame, resample CSI from 10→64 time packets via FFT, convert COCO17→OpenPose18 keypoints
+3. **Phase 3 — Normalize**: Compute statistics from train subjects only, then produce three variants:
+   - `csi_global_minmax.npy`: `(x - min) / (max - min)`
+   - `csi_global_zscore.npy`: `(x - mean) / std`
+   - `csi_zscore.npy`: per-sample `(x - mean_i) / std_i`
+
+Key arguments:
+- `--src`: Raw MM-Fi dataset path (default: `/data/WiFiPose/dataset/dataset`)
+- `--dst`: Output directory (default: `/data/WiFiPose/dataset/mmfi_pose_v3`)
+- `--train-subjects`: Subjects used for normalization statistics (default: S01-S10)
+- `--pose-min`/`--pose-max`: Keypoint coordinate range for heatmap mapping (default: -0.8/0.8)
+- `--workers`: Parallel processing workers (default: 4)
+
+### `scripts/train_all_envs.sh` / `train_all_envs.bat`
+
+Orchestration scripts that run training sequentially for all 4 environments (E01-E04).
+
+## Project structure
+
+```
+multiformer/
+├── train.py                  # Training entry point
+├── eval.py                   # Evaluation script (PCK metrics)
+├── visualize.py              # Visualization (GT vs predicted poses)
+├── configs/                  # YAML configuration files
+│   ├── default.yaml
+│   ├── E01.yaml
+│   ├── E01_B1.yaml
+│   ├── E01_B2.yaml
+│   ├── E02.yaml
+│   ├── E03.yaml
+│   └── E04.yaml
+├── data/
+│   ├── __init__.py           # Exports MemmapDataset
+│   ├── memmap_dataset.py     # Memory-mapped dataset
+│   ├── csi_preprocess.py     # CSI sanitization, resampling, normalization
+│   └── heatmap_gt.py         # Keypoint conversion, heatmap/PAF generation
+├── models/
+│   ├── __init__.py
+│   └── multiformer.py        # MultiFormer model architecture
+├── decode/
+│   ├── __init__.py
+│   └── pose_decoder.py       # Heatmap → keypoint decoding
+├── utils/
+│   ├── __init__.py
+│   ├── metrics.py            # PCK computation
+│   └── viz.py                # Visualization utilities
+├── scripts/
+│   ├── build_memmap.py       # Build memmap .npy files from raw MM-Fi
+│   ├── train_all_envs.sh     # Linux training orchestration
+│   └── train_all_envs.bat    # Windows training orchestration
+├── CLAUDE.md                 # This file
+└── .gitignore
+```
+
+## Key design decisions
+
+1. **Memory-mapped I/O**: CSI data is stored as `.npy` files and accessed via `np.memmap`. This enables zero-copy reads and leverages OS page cache for fast repeated access.
+2. **Pre-computed normalization**: Three normalization variants are pre-computed at build time, avoiding per-sample computation during training.
+3. **Per-subject split**: Train/val split is done per-subject (not global shuffle) to prevent data leakage between splits.
+4. **Multi-stage refinement**: The MSFN uses 3 stages with PAPM attention, where each stage's heatmap output guides the next stage's feature refinement.
+5. **Dual-domain attention**: Separate Transformer encoders for time and frequency domains, with reconstruction layers projecting back to 2D spatial feature maps.

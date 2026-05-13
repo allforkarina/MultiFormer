@@ -1,6 +1,5 @@
 dataset:
-  type: "h5"
-  root: "/data/WiFiPose/dataset/mmfi_pose_v2.h5"
+  root: "/data/WiFiPose/dataset/mmfi_pose_v3"
   split: "same_subject_random"
   envs: ["env2"]
   train_subjects: ["S11", "S12", "S13", "S14", "S15", "S16", "S17", "S18", "S19", "S20"]
@@ -14,7 +13,6 @@ csi:
   subcarriers: 114
   subcarrier_mode: "keep"
   normalize: "global_minmax"
-  amp_key: "CSIamp"
 
 heatmap:
   size: 36

@@ -1,11 +1,8 @@
-from .mmfi_dataset import MMFiDataset, enumerate_mmfi_samples
-from .h5_dataset import H5MMFiDataset
+from .memmap_dataset import MemmapDataset
 from .heatmap_gt import COCO17_TO_OPENPOSE18, LIMBS_18, coco17_to_openpose18
 
 __all__ = [
-    "MMFiDataset",
-    "H5MMFiDataset",
-    "enumerate_mmfi_samples",
+    "MemmapDataset",
     "COCO17_TO_OPENPOSE18",
     "LIMBS_18",
     "coco17_to_openpose18",
