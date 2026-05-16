@@ -122,7 +122,8 @@ def normalize_kpts_to_pose_range(
     kpts: np.ndarray, pose_min: float = -0.8, pose_max: float = 0.8,
 ) -> np.ndarray:
     kpts = np.asarray(kpts, dtype=np.float32).copy()
-    non_zero = kpts[kpts != 0]
+    invalid = ~np.isfinite(kpts).all(axis=-1) | np.all(np.isclose(kpts, 0.0), axis=-1)
+    non_zero = kpts[~invalid]
     abs_max = float(np.abs(non_zero).max()) if len(non_zero) > 0 else 0.0
     if abs_max > 10.0:
         IMG_W, IMG_H = 1920.0, 1080.0
@@ -130,7 +131,6 @@ def normalize_kpts_to_pose_range(
         kpts[..., 1] /= IMG_H
         span = pose_max - pose_min
         kpts = kpts * span + pose_min
-    invalid = ~np.isfinite(kpts).all(axis=-1) | np.all(np.isclose(kpts, 0.0), axis=-1)
     kpts[invalid] = 0.0
     return kpts.astype(np.float32)
 
