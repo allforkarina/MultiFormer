@@ -26,49 +26,48 @@ OPENPOSE_18_NAMES = [
     "l_ear",
 ]
 
-# COCO17 order:
-# nose, l_eye, r_eye, l_ear, r_ear, l_shoulder, r_shoulder, l_elbow,
-# r_elbow, l_wrist, r_wrist, l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle.
-COCO17_TO_OPENPOSE18 = {
-    0: 0,
-    2: 6,
-    3: 8,
-    4: 10,
-    5: 5,
-    6: 7,
-    7: 9,
-    8: 12,
-    9: 14,
-    10: 16,
-    11: 11,
-    12: 13,
-    13: 15,
-    14: 2,
-    15: 1,
-    16: 4,
-    17: 3,
+# H36M-17 order (MM-Fi native format):
+# pelvis, r_hip, r_knee, r_ankle, l_hip, l_knee, l_ankle,
+# spine, thorax, neck, head, l_shoulder, l_elbow, l_wrist,
+# r_shoulder, r_elbow, r_wrist.
+H36M17_TO_OPENPOSE18 = {
+    0: 9,   # OP nose       ← H36M neck/head_base
+    2: 14,  # OP r_shoulder ← H36M r_shoulder
+    3: 15,  # OP r_elbow    ← H36M r_elbow
+    4: 16,  # OP r_wrist    ← H36M r_wrist
+    5: 11,  # OP l_shoulder ← H36M l_shoulder
+    6: 12,  # OP l_elbow    ← H36M l_elbow
+    7: 13,  # OP l_wrist    ← H36M l_wrist
+    8: 1,   # OP r_hip      ← H36M r_hip
+    9: 2,   # OP r_knee     ← H36M r_knee
+    10: 3,  # OP r_ankle    ← H36M r_ankle
+    11: 4,  # OP l_hip      ← H36M l_hip
+    12: 5,  # OP l_knee     ← H36M l_knee
+    13: 6,  # OP l_ankle    ← H36M l_ankle
 }
 
 LIMBS_18 = [
+    # Right leg
     (0, 1),
     (1, 2),
     (2, 3),
-    (3, 4),
-    (1, 5),
+    # Left leg
+    (0, 4),
+    (4, 5),
     (5, 6),
-    (6, 7),
-    (1, 8),
+    # Spine
+    (0, 7),
+    (7, 8),
     (8, 9),
     (9, 10),
-    (1, 11),
+    # Right arm
+    (8, 14),
+    (14, 15),
+    (15, 16),
+    # Left arm
+    (8, 11),
     (11, 12),
     (12, 13),
-    (0, 14),
-    (14, 16),
-    (0, 15),
-    (15, 17),
-    (2, 8),
-    (5, 11),
 ]
 
 
@@ -77,22 +76,22 @@ def valid_point(point: np.ndarray) -> bool:
     return bool(np.isfinite(point).all() and not np.allclose(point, 0.0))
 
 
-def coco17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
-    """Convert MM-Fi COCO17 keypoints to the OpenPose-18 order used by MultiFormer."""
+def h36m17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
+    """Convert MM-Fi H36M-17 keypoints to the OpenPose-18 order used by MultiFormer."""
     kpts17 = np.asarray(kpts17, dtype=np.float32)
     if kpts17.shape[-2:] != (17, 2):
         raise ValueError(f"Expected keypoints with shape (17, 2), got {kpts17.shape}")
 
     kpts18 = np.zeros((18, 2), dtype=np.float32)
     valid = np.zeros(18, dtype=bool)
-    for op_idx, coco_idx in COCO17_TO_OPENPOSE18.items():
-        point = kpts17[coco_idx]
+    for op_idx, src_idx in H36M17_TO_OPENPOSE18.items():
+        point = kpts17[src_idx]
         if valid_point(point):
             kpts18[op_idx] = point
             valid[op_idx] = True
 
-    left_shoulder = kpts17[5]
-    right_shoulder = kpts17[6]
+    left_shoulder = kpts17[11]
+    right_shoulder = kpts17[14]
     if valid_point(left_shoulder) and valid_point(right_shoulder):
         kpts18[1] = (left_shoulder + right_shoulder) * 0.5
         valid[1] = True

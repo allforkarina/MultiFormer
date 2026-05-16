@@ -7,7 +7,7 @@ Training loader uses np.load(path, mmap_mode='r') for zero-copy OS-cached access
 Input:
     /data/WiFiPose/dataset/dataset/{ACTION}/{SUBJECT}/
         wifi-csi/frame*.mat   ← CSIamp (3, 114, 10) float64
-        rgb/frame*.npy        ← COCO17 keypoints (17, 2) float32
+        rgb/frame*.npy        ← H36M-17 keypoints (17, 2) float32
 
 Output:
     /data/WiFiPose/dataset/mmfi_pose_v3/
@@ -45,25 +45,21 @@ TIME_PACKETS = 64
 RX_ANTENNAS = 3
 SUBCARRIERS = 114
 
-# COCO17 → OpenPose18 mapping (与 data/heatmap_gt.py 一致)
-COCO17_TO_OPENPOSE18 = {
-    0: 0,   # nose
-    2: 6,   # r_shoulder
-    3: 8,   # r_elbow
-    4: 10,  # r_wrist
-    5: 5,   # l_shoulder
-    6: 7,   # l_elbow
-    7: 9,   # l_wrist
-    8: 12,  # r_hip
-    9: 14,  # r_knee
-    10: 16, # r_ankle
-    11: 11, # l_hip
-    12: 13, # l_knee
-    13: 15, # l_ankle
-    14: 2,  # r_eye
-    15: 1,  # l_eye
-    16: 4,  # r_ear
-    17: 3,  # l_ear
+# H36M-17 → OpenPose18 mapping (与 data/heatmap_gt.py 一致)
+H36M17_TO_OPENPOSE18 = {
+    0: 9,   # OP nose       ← H36M neck/head_base
+    2: 14,  # OP r_shoulder ← H36M r_shoulder
+    3: 15,  # OP r_elbow    ← H36M r_elbow
+    4: 16,  # OP r_wrist    ← H36M r_wrist
+    5: 11,  # OP l_shoulder ← H36M l_shoulder
+    6: 12,  # OP l_elbow    ← H36M l_elbow
+    7: 13,  # OP l_wrist    ← H36M l_wrist
+    8: 1,   # OP r_hip      ← H36M r_hip
+    9: 2,   # OP r_knee     ← H36M r_knee
+    10: 3,  # OP r_ankle    ← H36M r_ankle
+    11: 4,  # OP l_hip      ← H36M l_hip
+    12: 5,  # OP l_knee     ← H36M l_knee
+    13: 6,  # OP l_ankle    ← H36M l_ankle
 }
 
 
@@ -101,18 +97,18 @@ def _valid_point(point: np.ndarray) -> bool:
     return bool(np.isfinite(point).all() and not np.allclose(point, 0.0))
 
 
-def coco17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
+def h36m17_to_openpose18(kpts17: np.ndarray) -> np.ndarray:
     kpts17 = np.asarray(kpts17, dtype=np.float32)
     kpts18 = np.zeros((18, 2), dtype=np.float32)                # initialize with zeros
     valid = np.zeros(18, dtype=bool)
-    for op_idx, coco_idx in COCO17_TO_OPENPOSE18.items():
-        p = kpts17[coco_idx]                                    # read origin kpts
+    for op_idx, src_idx in H36M17_TO_OPENPOSE18.items():
+        p = kpts17[src_idx]                                     # read origin kpts
         if _valid_point(p):
             kpts18[op_idx] = p
             valid[op_idx] = True
-    l_sh, r_sh = kpts17[5], kpts17[6]                           # left and right -> nose
+    l_sh, r_sh = kpts17[11], kpts17[14]                         # H36M-17 shoulder indices
     if _valid_point(l_sh) and _valid_point(r_sh):
-        kpts18[1] = (l_sh + r_sh) * 0.5                         # average to get nose.
+        kpts18[1] = (l_sh + r_sh) * 0.5                         # neck = shoulder midpoint
         valid[1] = True
     elif _valid_point(l_sh):
         kpts18[1] = l_sh; valid[1] = True
@@ -183,7 +179,7 @@ def process_trial(trial_dir: Path, pose_min: float, pose_max: float) -> dict | N
         csi_frames[i] = preprocess_csi_one_frame(np.asarray(mat["CSIamp"], dtype=np.float32))
         kpts_coco17 = np.load(str(npy_stems[stem]))
         kpts18[i] = normalize_kpts_to_pose_range(
-            coco17_to_openpose18(kpts_coco17), pose_min, pose_max
+            h36m17_to_openpose18(kpts_coco17), pose_min, pose_max
         )
         frame_idx[i] = int(stem.replace("frame", ""))
 
